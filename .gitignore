@@ -1,0 +1,21 @@
+# 环境变量（含 API keys）
+.env
+
+# SQLite 数据库
+*.db
+
+# Runtime lock files
+runtime/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
