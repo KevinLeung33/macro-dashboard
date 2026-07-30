@@ -1,6 +1,7 @@
 """Plotly overlays for news clusters and composite signal snapshots."""
 import pandas as pd
 from db.repository import get_db
+from db.sqlite_compat import sqlite_date
 
 
 NEWS_COLORS = {5: "#d62728", 4: "#d62728", 3: "#ffb000", 2: "#999999", 1: "#bbbbbb"}
@@ -15,6 +16,7 @@ def _csv_has(text, values):
 
 
 def get_chart_events(asset=None, event_types=None, start_date=None, limit=12):
+    start_date = sqlite_date(start_date)
     assets = [asset] if isinstance(asset, str) and asset else (asset or [])
     events = []
     with get_db() as conn:

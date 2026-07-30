@@ -5,6 +5,7 @@ import hashlib
 import logging
 
 from db.schema import get_db
+from db.sqlite_compat import sqlite_date
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,8 @@ def upsert_series_meta(source, series_id, meta):
 
 
 def query_series(source, series_id, start_date=None, end_date=None):
+    start_date = sqlite_date(start_date)
+    end_date = sqlite_date(end_date)
     query = "SELECT date, value FROM time_series WHERE source = ? AND series_id = ?"
     params = [source, series_id]
     if start_date:
@@ -437,6 +440,7 @@ def query_research_context(limit=8):
 # ====== Composite signal snapshots / reviews ======
 
 def upsert_composite_signal_snapshot(signal_date, signal):
+    signal_date = sqlite_date(signal_date)
     with get_db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO composite_signal_snapshots
@@ -468,6 +472,7 @@ def upsert_composite_signal_snapshot(signal_date, signal):
 def upsert_composite_signal_review(snapshot_id, asset, source, series_id,
                                    start_date=None, start_value=None,
                                    return_1d=None, return_3d=None, return_7d=None):
+    start_date = sqlite_date(start_date)
     with get_db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO composite_signal_reviews
@@ -537,6 +542,7 @@ def upsert_tic_holdings(records):
 
 
 def query_tic_holdings(date=None):
+    date = sqlite_date(date)
     with get_db() as conn:
         if date:
             rows = conn.execute(
@@ -1017,6 +1023,7 @@ def query_ai_analyses_for_review(limit=500):
 def upsert_ai_analysis_review(analysis_id, asset, source, series_id, predicted_direction,
                               start_date, start_value, return_1d, return_3d,
                               return_7d, return_30d):
+    start_date = sqlite_date(start_date)
     with get_db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO ai_analysis_reviews
