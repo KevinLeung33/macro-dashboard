@@ -14,8 +14,10 @@ from services.news_clusterer import build_news_clusters
 from services.news_research_links import refresh_news_research_links
 from utils.navigation import render_research_target
 from services.time_utils import app_now
+from services.access_control import render_admin_access, require_admin
 
 st.set_page_config(page_title="新闻雷达", page_icon="📡", layout="wide")
+admin_access = render_admin_access()
 st.title("📡 新闻雷达")
 target = render_research_target()
 
@@ -32,7 +34,7 @@ for index, status in enumerate(("fetched", "queued", "analyzing", "analyzed", "c
 if processing["failed"]:
     retry_col, link_col = st.columns([1, 3])
     with retry_col:
-        if st.button("重试失败文章", use_container_width=True):
+        if st.button("重试失败文章", use_container_width=True, disabled=not admin_access) and require_admin("重试失败文章"):
             count = retry_failed_articles()
             st.success(f"已重新入队 {count} 篇失败文章")
             st.rerun()
@@ -63,12 +65,12 @@ with tab0:
     with c2:
         min_cluster_sev = st.selectbox("最低严重度", [1, 2, 3, 4], index=2)
     with c3:
-        if st.button("重建事件流", use_container_width=True):
+        if st.button("重建事件流", use_container_width=True, disabled=not admin_access) and require_admin("重建事件流"):
             with st.spinner("正在聚类最近新闻..."):
                 result = build_news_clusters(days=3)
             st.success(f"聚类完成：{result['articles']}篇文章 → {result['clusters']}个事件")
     with c4:
-        if st.button("刷新研究关联", use_container_width=True):
+        if st.button("刷新研究关联", use_container_width=True, disabled=not admin_access) and require_admin("刷新研究关联"):
             result = refresh_news_research_links()
             st.success(f"已关联 {result['indicator_links']} 个指标、{result['hypothesis_links']} 条假设")
 
@@ -207,7 +209,7 @@ with tab1:
 with tab2:
     c1, c2 = st.columns([1, 3])
     with c1:
-        if st.button("刷新 AI 复盘", use_container_width=True):
+        if st.button("刷新 AI 复盘", use_container_width=True, disabled=not admin_access) and require_admin("刷新 AI 复盘"):
             result = refresh_ai_analysis_reviews()
             st.success(f"已更新 {result['reviewed']} 条资产复盘，跳过 {result['skipped']} 条无方向或无行情记录")
     with c2:

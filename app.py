@@ -16,9 +16,11 @@ from services.dashboard_cockpit import build_cockpit
 from services.market_data import query_market_series
 from services.runtime_controls import TaskBusyError, hold_task, run_with_retry
 from services.time_utils import app_now
+from services.access_control import render_admin_access, require_admin
 from utils.navigation import go_to_research
 
 st.set_page_config(page_title="宏观仪表盘", page_icon="📊", layout="wide")
+admin_access = render_admin_access()
 st.title("📊 宏观市场分析仪表盘")
 st.caption("美国利率·信用·通胀·增长·全球联动 | 数据：FRED·AKShare·TIC")
 
@@ -32,7 +34,7 @@ def _show(fig, note=""):
 
 col1, col2, col3 = st.columns([2, 1, 1])
 with col2:
-    if st.button("🔄 刷新数据", use_container_width=True, type="primary"):
+    if st.button("🔄 刷新数据", use_container_width=True, type="primary", disabled=not admin_access) and require_admin("刷新数据"):
         try:
             with hold_task("data_refresh"):
                 with st.spinner("拉取 FRED + 新闻 + AI分析 ..."):

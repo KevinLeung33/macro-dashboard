@@ -16,6 +16,37 @@ streamlit run app.py
 python server.py --with-api
 ```
 
+### 访问权限
+
+看板默认是只读访问，朋友可以直接浏览市场数据、研究页面和历史报告。刷新数据、生成日报、重试新闻、保存研究假设、修改通知规则等写操作需要管理员会话解锁。
+
+在服务器 `.env` 中配置管理员密码，示例：
+
+```env
+DASHBOARD_ADMIN_PASSWORD=请替换为随机长密码
+DASHBOARD_ADMIN_SESSION_MINUTES=60
+```
+
+更推荐配置 PBKDF2 哈希，而不是保存明文密码：
+
+```bash
+python -m services.access_control
+```
+
+将命令输出写入：
+
+```env
+DASHBOARD_ADMIN_PASSWORD_HASH=pbkdf2_sha256$...
+```
+
+配置后重启 Streamlit：
+
+```bash
+sudo systemctl restart macro-dashboard-streamlit
+```
+
+打开网页后，在侧边栏的“管理员操作”中输入密码。管理员权限只保存在当前浏览器会话，超时或服务重启后失效。管理员登录请使用 HTTPS 地址（例如 cpolar 提供的 HTTPS 地址），不要在公共网络中通过明文 HTTP 输入密码。
+
 手动刷新全部数据：
 
 ```bash

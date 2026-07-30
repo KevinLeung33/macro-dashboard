@@ -5,9 +5,11 @@ from db.schema import init_db
 from db.repository import query_daily_reports
 from services.daily_context import save_daily_context
 from services.daily_ai_report import save_ai_trend_report
+from services.access_control import render_admin_access, require_admin
 
 
 st.set_page_config(page_title="每日沉淀", page_icon="📝", layout="wide")
+admin_access = render_admin_access()
 st.title("📝 每日沉淀")
 
 init_db()
@@ -16,7 +18,7 @@ top_left, top_mid, top_right = st.columns([2, 1, 1])
 with top_left:
     st.caption("这里保存每日研究包和 AI 趋势日报：数据健康度、近期变化、告警、极端分位、重要新闻，以及模型对一段时间变化的归纳。")
 with top_mid:
-    if st.button("生成AI趋势日报", use_container_width=True, type="primary"):
+    if st.button("生成AI趋势日报", use_container_width=True, type="primary", disabled=not admin_access) and require_admin("生成 AI 趋势日报"):
         with st.spinner("正在汇总研究包并调用AI..."):
             result, markdown, _context = save_ai_trend_report(session="ai_daily")
         if result:
@@ -25,7 +27,7 @@ with top_mid:
             st.warning("AI未配置或调用失败，已保存本地研究包")
         st.markdown(markdown)
 with top_right:
-    if st.button("生成研究包", use_container_width=True):
+    if st.button("生成研究包", use_container_width=True, disabled=not admin_access) and require_admin("生成研究包"):
         with st.spinner("正在汇总数据、告警和新闻..."):
             _context, markdown = save_daily_context(session="daily")
         st.success("研究包已保存")

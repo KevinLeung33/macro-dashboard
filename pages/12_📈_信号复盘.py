@@ -10,9 +10,11 @@ from db.repository import (
 )
 from services.signal_review import save_signal_snapshots
 from services.signal_stats import signal_effectiveness
+from services.access_control import render_admin_access, require_admin
 
 
 st.set_page_config(page_title="信号复盘", page_icon="📈", layout="wide")
+admin_access = render_admin_access()
 st.title("📈 信号复盘")
 st.caption("记录组合信号出现时的资产价格，并随着新数据到来刷新 1D/3D/7D 后续表现。")
 
@@ -22,7 +24,7 @@ c1, c2 = st.columns([2, 1])
 with c1:
     st.caption("当前版本使用“后续第 N 个可用数据点”计算收益，适合处理周末和市场休市。")
 with c2:
-    if st.button("保存/刷新今日信号", use_container_width=True, type="primary"):
+    if st.button("保存/刷新今日信号", use_container_width=True, type="primary", disabled=not admin_access) and require_admin("保存/刷新今日信号"):
         with st.spinner("正在保存组合信号并刷新复盘..."):
             result = save_signal_snapshots()
         st.success(f"已保存 {result['saved']} 个信号，刷新 {result['reviewed']} 条资产复盘")

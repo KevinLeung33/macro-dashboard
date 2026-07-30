@@ -7,8 +7,10 @@ from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add
 from utils.event_overlays import add_event_markers, get_chart_events
 from utils.indicators import latest_value
 from utils.navigation import apply_target_window, render_research_target
+from services.access_control import render_admin_access, require_admin
 
 st.set_page_config(page_title="全球市场",page_icon="🌍",layout="wide")
+admin_access = render_admin_access()
 st.title("🌍 全球市场")
 cfg=plotly_config()
 logger = logging.getLogger(__name__)
@@ -156,7 +158,9 @@ with st.expander("➕ 添加"):
         ed=st.date_input("日期"); et=st.text_input("标题")
         ec=st.selectbox("类别",["market","geopolitics","fed","data_release","crypto","global_cycle"])
         ei=st.select_slider("重要度",["low","medium","high"])
-        if st.form_submit_button("添加"): add_event(str(ed),et,"",ec,ei); st.rerun()
+        if st.form_submit_button("添加", disabled=not admin_access) and require_admin("添加事件"):
+            add_event(str(ed), et, "", ec, ei)
+            st.rerun()
 evts=query_events(50)
 if evts:
     import pandas as pd

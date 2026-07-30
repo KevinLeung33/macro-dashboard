@@ -15,9 +15,11 @@ from db.repository import (
     update_watchlist_status,
 )
 from services.research_linker import infer_research_links
+from services.access_control import render_admin_access, require_admin
 
 
 st.set_page_config(page_title="研究假设", page_icon="🧭", layout="wide")
+admin_access = render_admin_access()
 st.title("🧭 研究假设")
 st.caption("把你的长期框架、当前观点和临时观察项沉淀下来，并绑定到指标、资产和新闻主题。")
 
@@ -40,8 +42,8 @@ with st.expander("新增长期假设", expanded=False):
             confidence = st.slider("当前置信度", 0.0, 1.0, 0.5, 0.05)
         with c5:
             status = st.selectbox("状态", ["active", "watching", "paused", "retired"])
-        submitted = st.form_submit_button("保存假设", type="primary")
-        if submitted:
+        submitted = st.form_submit_button("保存假设", type="primary", disabled=not admin_access)
+        if submitted and require_admin("保存研究假设"):
             if title and thesis:
                 add_research_hypothesis(
                     title=title, thesis=thesis, assets=assets, indicators=indicators,
@@ -106,7 +108,7 @@ with tab_h:
                                 index=status_options.index(row["status"]) if row["status"] in status_options else 0,
                                 key=f"status_{row['id']}",
                             )
-                        if st.form_submit_button("更新"):
+                        if st.form_submit_button("更新", disabled=not admin_access) and require_admin("更新研究假设"):
                             update_research_hypothesis(
                                 row["id"], e_title, e_thesis, e_assets, e_indicators,
                                 e_topics, e_falsification, e_status, e_confidence,
@@ -130,7 +132,7 @@ with tab_v:
         rationale = st.text_area("判断", placeholder="今天你的观点是什么？为什么？", height=90)
         evidence = st.text_area("证据", placeholder="引用哪些指标、新闻或价格变化？", height=70)
         watch_next = st.text_area("后续观察", placeholder="接下来要看什么？", height=70)
-        if st.form_submit_button("记录观点", type="primary"):
+        if st.form_submit_button("记录观点", type="primary", disabled=not admin_access) and require_admin("记录观点"):
             add_viewpoint_log(
                 hypothesis_id=h_options[hypothesis_label],
                 view_date=view_date.strftime("%Y-%m-%d"),
@@ -170,7 +172,7 @@ with tab_w:
             linked_assets = st.text_input("相关资产", placeholder="CNH,HSTECH,DXY")
         with c2:
             linked_indicators = st.text_input("相关指标", placeholder="USDCNH,DX-Y.NYB")
-        if st.form_submit_button("加入观察项", type="primary"):
+        if st.form_submit_button("加入观察项", type="primary", disabled=not admin_access) and require_admin("加入观察项"):
             if title:
                 add_watchlist_item(title, trigger, why, linked_assets, linked_indicators)
                 st.success("观察项已添加")
@@ -210,8 +212,9 @@ with tab_w:
                         watch_status_options,
                         index=watch_status_options.index(item["status"]) if item["status"] in watch_status_options else 0,
                         key=f"watch_{item['id']}",
+                        disabled=not admin_access,
                     )
-                    if new_status != item["status"]:
+                    if new_status != item["status"] and require_admin("更新观察项"):
                         update_watchlist_status(item["id"], new_status)
                         st.success("已更新")
                 st.divider()
