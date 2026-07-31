@@ -180,8 +180,8 @@ def get_multi_window_trends(windows=(7, 30, 90)):
     return sorted(trends, key=lambda x: x.get("importance", 0), reverse=True)[:12]
 
 
-def get_news_trends():
-    rows = query_analyzed_news(min_severity=2, limit=80)
+def get_news_trends(days=7):
+    rows = query_analyzed_news(min_severity=2, limit=80, days=days)
     buckets = {}
     for row in rows:
         item = dict(row)

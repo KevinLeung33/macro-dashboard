@@ -1,14 +1,72 @@
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
+import streamlit as st
+
+
+CHART_WINDOWS = {
+    "1M": ("1个月", pd.DateOffset(months=1)),
+    "3M": ("3个月", pd.DateOffset(months=3)),
+    "6M": ("6个月", pd.DateOffset(months=6)),
+    "1Y": ("1年", pd.DateOffset(years=1)),
+    "3Y": ("3年", pd.DateOffset(years=3)),
+    "ALL": ("全部", None),
+}
+
+
+def render_chart_controls(key="chart_window"):
+    """Render the page-level time window selector used by all charts.
+
+    The selector lives outside Plotly so it cannot collide with the legend or
+    the Plotly mode bar. ``add_range_selector`` remains as a compatibility
+    wrapper for existing page code and applies the selected window to figures.
+    """
+    target = st.session_state.get("research_navigation", {})
+    target_window = target.get("window")
+    if target_window in CHART_WINDOWS and st.session_state.get("_chart_target_window") != target_window:
+        st.session_state[key] = target_window
+        st.session_state["_chart_target_window"] = target_window
+
+    current = st.session_state.get(key, "3M")
+    if current not in CHART_WINDOWS:
+        current = "3M"
+
+    st.markdown("**研究窗口**")
+    selected = st.radio(
+        "选择图表时间窗口",
+        options=list(CHART_WINDOWS),
+        index=list(CHART_WINDOWS).index(current),
+        format_func=lambda value: CHART_WINDOWS[value][0],
+        horizontal=True,
+        key=key,
+        label_visibility="collapsed",
+    )
+    st.caption("窗口只改变图表可视范围，不会删除历史数据；详细的 7D/30D/90D 对比见首页简报和周报。")
+    return selected
+
+
+def _figure_date_range(fig):
+    values = []
+    for trace in fig.data:
+        if trace.x is None:
+            continue
+        values.extend(list(trace.x))
+    if not values:
+        return None
+    dates = pd.to_datetime(pd.Series(values), errors="coerce").dropna()
+    if dates.empty:
+        return None
+    if getattr(dates.dt, "tz", None) is not None:
+        dates = dates.dt.tz_localize(None)
+    return dates.min(), dates.max()
 
 
 def add_source_annotation(fig):
     fig.update_layout(
-        margin=dict(l=20, r=20, t=40, b=20),
+        margin=dict(l=48, r=48, t=48, b=64),
         hovermode="x unified",
         font=dict(size=12),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="left", x=0),
     )
     return fig
 
@@ -85,8 +143,8 @@ def dual_axis_chart(dfs, title, y1_title="", y2_title="", height=400):
         ),
         hovermode="x unified",
         font=dict(size=12),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="left", x=0),
+        margin=dict(l=48, r=48, t=48, b=64),
     )
     return fig
 
@@ -109,20 +167,22 @@ def horizontal_bar(df, title, x_label="", height=400):
 
 
 def add_range_selector(fig):
-    """添加时间范围快捷按钮 — 颜色自适应暗色模式"""
+    """Apply the page-level time window to a figure.
+
+    The function name is retained because all pages already use it. The old
+    embedded Plotly buttons were removed: they competed for the same top row
+    as the legend and mode bar on wide charts.
+    """
+    selected = st.session_state.get("chart_window", "3M")
+    date_range = _figure_date_range(fig)
+    if date_range and selected in CHART_WINDOWS:
+        earliest, latest = date_range
+        offset = CHART_WINDOWS[selected][1]
+        if offset is None:
+            fig.update_xaxes(autorange=True)
+        else:
+            fig.update_xaxes(range=[latest - offset, latest])
     fig.update_xaxes(
-        rangeselector=dict(
-            buttons=list([
-                dict(count=1, label="1月", step="month", stepmode="backward"),
-                dict(count=3, label="3月", step="month", stepmode="backward"),
-                dict(count=6, label="6月", step="month", stepmode="backward"),
-                dict(count=1, label="1年", step="year", stepmode="backward"),
-                dict(count=3, label="3年", step="year", stepmode="backward"),
-                dict(step="all", label="全部"),
-            ]),
-            bgcolor="rgba(128,128,128,0.1)",
-            activecolor="rgba(31,119,180,0.5)",
-        ),
         rangeslider=dict(visible=False),
     )
     # Make plot background transparent for dark mode
@@ -136,7 +196,7 @@ def add_range_selector(fig):
 def plotly_config():
     """Plotly 交互配置"""
     return {
-        "displayModeBar": True,
+        "displayModeBar": "hover",
         "modeBarButtonsToRemove": ["lasso2d", "select2d"],
         "displaylogo": False,
         "scrollZoom": True,

@@ -4,11 +4,12 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from db.repository import query_series
-from utils.chart_utils import add_range_selector, plotly_config
+from utils.chart_utils import add_range_selector, plotly_config, render_chart_controls
 from services.time_utils import app_now
 
 st.set_page_config(page_title="历史对比", page_icon="⏳", layout="wide")
 st.title("⏳ 历史对比：现在像哪一年？")
+render_chart_controls()
 cfg = plotly_config()
 def _show(fig, note=""):
     st.plotly_chart(fig, use_container_width=True, config=cfg)

@@ -2,17 +2,18 @@ import streamlit as st
 import pandas as pd
 
 from db.schema import init_db
-from db.repository import query_series, query_latest_values, query_events
+from db.repository import query_series, query_latest_values, query_events, query_daily_reports
 from data.pipeline import fetch_all
 from utils.chart_utils import (
     line_chart, metric_card, multi_line_chart, dual_axis_chart,
-    horizontal_bar, add_range_selector, plotly_config,
+    horizontal_bar, add_range_selector, plotly_config, render_chart_controls,
 )
 from utils.alerts import check_alerts
 from utils.indicators import compute_zscores, latest_value, scale_series, yoy_series
 from services.daily_context import get_data_health, get_market_moves
 from services.composite_signals import compute_composite_signals
 from services.dashboard_cockpit import build_cockpit
+from services.home_brief import build_home_brief
 from services.market_data import query_market_series
 from services.runtime_controls import TaskBusyError, hold_task, run_with_retry
 from services.time_utils import app_now
@@ -23,6 +24,7 @@ st.set_page_config(page_title="宏观仪表盘", page_icon="📊", layout="wide"
 admin_access = render_admin_access()
 st.title("📊 宏观市场分析仪表盘")
 st.caption("美国利率·信用·通胀·增长·全球联动 | 数据：FRED·AKShare·TIC")
+render_chart_controls()
 
 init_db()
 cfg = plotly_config()
@@ -52,6 +54,35 @@ with col3:
 
 # ===== RESEARCH COCKPIT =====
 cockpit = build_cockpit()
+brief = build_home_brief(cockpit)
+
+st.subheader("📝 市场简报")
+date_note = "、".join(brief["data_dates"]) if brief["data_dates"] else "暂无数据日期"
+health_note = f" · 数据健康提醒 {brief['health_warning_count']} 项" if brief["health_warning_count"] else ""
+st.caption(f"基于当前已入库数据与近期新闻自动归纳 · 数据日期：{date_note} · 生成于 {brief['generated_at']}{health_note}")
+brief_tabs = st.tabs(["今日", "本周", "中期"])
+for tab, key in zip(brief_tabs, ("today", "week", "medium")):
+    with tab:
+        for item in brief[key]:
+            st.markdown(f"- {item}")
+
+if brief["themes"]:
+    with st.expander("查看四个研究主题的当前结论", expanded=True):
+        theme_cols = st.columns(min(len(brief["themes"]), 4))
+        for index, item in enumerate(brief["themes"]):
+            with theme_cols[index % len(theme_cols)]:
+                level_text = {"red": "重点关注", "yellow": "观察中", "blue": "缓和", "green": "正常", "unknown": "数据不足"}.get(item["level"], "观察中")
+                st.markdown(f"**{item['theme']} · {level_text}**")
+                st.caption(item["conclusion"])
+                if item["watch_next"]:
+                    st.caption("继续观察：" + "、".join(item["watch_next"]))
+
+weekly_report = next((row for row in query_daily_reports(limit=40) if row["session"] == "weekly"), None)
+if weekly_report:
+    with st.expander(f"最新周度中短期报告 · {weekly_report['report_date']}", expanded=False):
+        st.caption("这是定期保存的详细文字报告；首页简报保持短小，完整内容在这里展开。")
+        st.markdown(weekly_report["raw_markdown"] or weekly_report["summary"] or "报告暂无正文。")
+
 st.subheader("🧭 研究驾驶舱")
 top_signal = cockpit.get("top_signal")
 top_move = cockpit.get("top_move")

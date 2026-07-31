@@ -5,6 +5,7 @@ from db.schema import init_db
 from db.repository import query_daily_reports
 from services.daily_context import save_daily_context
 from services.daily_ai_report import save_ai_trend_report
+from services.report_builder import build_report
 from services.access_control import render_admin_access, require_admin
 
 
@@ -14,7 +15,7 @@ st.title("📝 每日沉淀")
 
 init_db()
 
-top_left, top_mid, top_right = st.columns([2, 1, 1])
+top_left, top_mid, top_right, top_weekly = st.columns([2, 1, 1, 1])
 with top_left:
     st.caption("这里保存每日研究包和 AI 趋势日报：数据健康度、近期变化、告警、极端分位、重要新闻，以及模型对一段时间变化的归纳。")
 with top_mid:
@@ -31,6 +32,12 @@ with top_right:
         with st.spinner("正在汇总数据、告警和新闻..."):
             _context, markdown = save_daily_context(session="daily")
         st.success("研究包已保存")
+        st.markdown(markdown)
+with top_weekly:
+    if st.button("生成周度报告", use_container_width=True, disabled=not admin_access) and require_admin("生成周度中短期报告"):
+        with st.spinner("正在生成 7D/30D/90D 对比报告..."):
+            markdown = build_report("weekly")
+        st.success("周度中短期报告已保存")
         st.markdown(markdown)
 
 st.divider()

@@ -758,7 +758,7 @@ def insert_ai_analysis(article_id, model, summary_cn, event_type, macro_channels
         )
 
 
-def query_analyzed_news(event_type=None, min_severity=1, assets=None, limit=30):
+def query_analyzed_news(event_type=None, min_severity=1, assets=None, limit=30, days=None):
     with get_db() as conn:
         query = """SELECT a.id AS analysis_id, a.model, a.prompt_version,
                           a.summary_cn, a.event_type, a.assets_impacted, a.direction,
@@ -779,6 +779,9 @@ def query_analyzed_news(event_type=None, min_severity=1, assets=None, limit=30):
             likes = " OR ".join(["a.assets_impacted LIKE ?" for _ in assets])
             query += f" AND ({likes})"
             params.extend([f"%{x}%" for x in assets])
+        if days is not None:
+            query += " AND COALESCE(n.published_at, a.created_at) >= datetime('now', ?)"
+            params.append(f"-{int(days)} days")
         query += " ORDER BY a.severity DESC, a.created_at DESC LIMIT ?"
         params.append(limit)
         return conn.execute(query, params).fetchall()

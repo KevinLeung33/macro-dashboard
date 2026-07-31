@@ -2,13 +2,14 @@
 import streamlit as st
 
 from db.repository import query_series
-from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config
+from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.navigation import apply_target_window, render_research_target
 
 st.set_page_config(page_title="流动性与融资", page_icon="💧", layout="wide")
 st.title("💧 流动性与融资")
 cfg = plotly_config()
 target = render_research_target()
+render_chart_controls()
 def _show(fig, note=""):
     st.plotly_chart(fig, use_container_width=True, config=cfg)
     if note: st.caption(note)

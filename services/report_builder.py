@@ -4,7 +4,8 @@ from datetime import timedelta
 
 from utils.alerts import check_alerts
 from utils.indicators import compute_zscores
-from db.repository import query_latest_values, query_events
+from db.repository import query_latest_values, query_events, upsert_daily_report
+from services.daily_context import get_data_health, get_market_moves, get_multi_window_trends, get_news_trends
 from services.time_utils import app_now
 
 
@@ -28,6 +29,9 @@ def build_report(report_type="daily"):
     latest = query_latest_values("fred")
     alerts = check_alerts()
     zscores = compute_zscores()
+    weekly_trends = get_multi_window_trends() if report_type == "weekly" else []
+    weekly_news = get_news_trends(days=7) if report_type == "weekly" else []
+    weekly_moves = get_market_moves(lookback_points=5, limit=6) if report_type == "weekly" else []
 
     # Market snapshot
     sp = _val(latest, "SP500")
@@ -46,7 +50,10 @@ def build_report(report_type="daily"):
     # Build report
     lines = []
     emoji = "📊" if report_type == "daily" else "📋"
-    lines.append(f"{emoji} **{'日报' if report_type == 'daily' else '周报'} — {date_str}**")
+    title = "日报" if report_type == "daily" else "周度中短期对比报告"
+    lines.append(f"{emoji} **{title} — {date_str}**")
+    if report_type == "weekly":
+        lines.append("本报告用于解释近一周发生了什么、30天趋势是否延续，以及90天背景是否支持当前判断；它不是交易指令。")
     lines.append("")
 
     # Market snapshot
@@ -55,6 +62,40 @@ def build_report(report_type="daily"):
     lines.append(f"HY OAS: {_fmt(hy,0)}bp | NFCI: {_fmt(nfci,2)} | 失业率: {_fmt(unemp,1)}% | 消费者信心: {_fmt(conf,0)}")
     lines.append(f"WTI: ${_fmt(oil,0)} | BTC: ${_fmt(btc,0)} | USD/EUR: {_fmt(dxy,3)}")
     lines.append("")
+
+    if report_type == "weekly":
+        lines.append("**中短期趋势比较**")
+        lines.append("比较口径：市场数据使用近5个数据点作为短期，宏观指标同时观察 7D、30D、90D；不同频率指标不强行换算成同一频率。")
+        if weekly_moves:
+            lines.append("近一周变化靠前的指标：")
+            for item in weekly_moves[:6]:
+                pct = item.get("change_n_pct")
+                change = _fmt(pct, 2, "%") if pct is not None else _fmt(item.get("change_n"), 2, item.get("unit", ""))
+                lines.append(f"  - {item['name']}: 当前 {_fmt(item.get('value'), 2, item.get('unit', ''))}，近5期 {change}")
+        for item in weekly_trends[:8]:
+            parts = []
+            for key in ("7d", "30d", "90d"):
+                window = item.get("windows", {}).get(key, {})
+                if window.get("change_pct") is not None:
+                    parts.append(f"{key} {_fmt(window['change_pct'], 2, '%')}")
+                elif window.get("change") is not None:
+                    parts.append(f"{key} {_fmt(window['change'], 2, item.get('unit', ''))}")
+            lines.append(f"  - {item['name']}: {'；'.join(parts) or '暂无足够历史'}")
+        if not weekly_trends and not weekly_moves:
+            lines.append("  - 暂无足够的趋势数据。")
+        lines.append("")
+
+        lines.append("**新闻主题与传导线索（近7天）**")
+        if weekly_news:
+            for item in weekly_news[:6]:
+                assets = ",".join(item.get("top_assets") or []) or "未明确资产"
+                lines.append(
+                    f"  - {item['event_type']}: {item['count']}篇，平均严重度 {item['avg_severity']:.1f}，"
+                    f"主要资产 {assets}；最新摘要：{item.get('latest') or '暂无'}"
+                )
+        else:
+            lines.append("  - 近7天暂无达到分析阈值的新闻主题。")
+        lines.append("")
 
     # Alerts
     if alerts:
@@ -103,4 +144,24 @@ def build_report(report_type="daily"):
             lines.append(f"  {icon} {e['title'][:80]}{analysis}")
         lines.append("")
 
-    return "\n".join(lines)
+    if report_type == "weekly":
+        stale = [item for item in get_data_health() if item.get("status") in ("quality_warning", "stale", "old", "error")]
+        lines.append("**数据质量与下周观察**")
+        if stale:
+            for item in stale[:6]:
+                lines.append(f"  - {item.get('source')}: {item.get('status')}，最新数据 {item.get('latest_data_date') or '—'}")
+        else:
+            lines.append("  - 当前数据源没有明显过期或质量告警。")
+        lines.append("  - 下周优先观察：10Y实际利率、DXY、HY OAS、VIX、BTC，以及新闻主题是否继续扩散。")
+
+    markdown = "\n".join(lines)
+    if report_type == "weekly":
+        upsert_daily_report(
+            report_date=date_str,
+            session="weekly",
+            title=f"{date_str} 周度中短期对比报告",
+            summary="；".join(line.strip(" -") for line in lines if line.startswith("  - "))[:500],
+            context={"report_type": "weekly", "generated_at": now.isoformat()},
+            raw_markdown=markdown,
+        )
+    return markdown

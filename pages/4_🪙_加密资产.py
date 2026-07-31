@@ -2,7 +2,7 @@ import streamlit as st
 
 from db.repository import query_series
 from services.market_data import query_market_series
-from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config
+from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.event_overlays import add_event_markers, get_chart_events
 from utils.indicators import latest_value
 from utils.navigation import apply_target_window, render_research_target
@@ -11,6 +11,7 @@ st.set_page_config(page_title="加密资产",page_icon="🪙",layout="wide")
 st.title("🪙 加密资产")
 cfg=plotly_config()
 target = render_research_target()
+render_chart_controls()
 def _q(source, series_id): return apply_target_window(query_series(source, series_id), target)
 def _market(series_id):
     frame, meta = query_market_series(series_id)

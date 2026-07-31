@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 
 from db.repository import query_series
-from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config
+from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.indicators import scale_series, yoy_series
 from utils.navigation import apply_target_window, render_research_target
 
@@ -11,6 +11,7 @@ st.set_page_config(page_title="就业市场", page_icon="👷", layout="wide")
 st.title("👷 就业市场深度扫描")
 cfg = plotly_config()
 target = render_research_target()
+render_chart_controls()
 def _q(sid): return apply_target_window(query_series("fred", sid), target)
 def _show(fig, note=""):
     st.plotly_chart(fig, use_container_width=True, config=cfg)

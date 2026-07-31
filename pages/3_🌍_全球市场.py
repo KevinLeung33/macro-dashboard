@@ -3,7 +3,7 @@ import logging
 
 from db.repository import query_series, query_events, add_event
 from services.market_data import query_market_series
-from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config
+from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.event_overlays import add_event_markers, get_chart_events
 from utils.indicators import latest_value
 from utils.navigation import apply_target_window, render_research_target
@@ -15,6 +15,7 @@ st.title("🌍 全球市场")
 cfg=plotly_config()
 logger = logging.getLogger(__name__)
 target = render_research_target()
+render_chart_controls()
 def _q(source, series_id): return apply_target_window(query_series(source, series_id), target)
 def _market(series_id):
     frame, meta = query_market_series(series_id)
