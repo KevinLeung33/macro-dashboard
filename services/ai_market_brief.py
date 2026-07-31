@@ -160,20 +160,56 @@ def _call_ai(payload):
         import openai
 
         client = openai.OpenAI(api_key=key, base_url=base)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": json.dumps(payload, ensure_ascii=False, default=str),
-                },
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-            max_tokens=_max_tokens(),
-        )
-        return _normalize_result(parse_ai_json(response.choices[0].message.content))
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False, default=str),
+            },
+        ]
+        last_error = None
+        # Some OpenAI-compatible gateways occasionally return an empty content
+        # field with JSON mode. Retry once without response_format so the local
+        # parser can still accept a fenced or slightly loose JSON response.
+        for attempt, use_json_mode in enumerate((True, False), start=1):
+            try:
+                request = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": 0.2 if use_json_mode else 0.1,
+                    "max_tokens": _max_tokens() if use_json_mode else min(_max_tokens() * 2, 4096),
+                }
+                if use_json_mode:
+                    request["response_format"] = {"type": "json_object"}
+                response = client.chat.completions.create(**request)
+                if not response.choices:
+                    raise ValueError("AI response has no choices")
+                choice = response.choices[0]
+                content = getattr(choice.message, "content", None)
+                finish_reason = getattr(choice, "finish_reason", None)
+                if isinstance(content, list):
+                    content = "".join(
+                        str(part.get("text", ""))
+                        for part in content
+                        if isinstance(part, dict)
+                    )
+                if not content or not str(content).strip():
+                    raise ValueError(
+                        f"empty AI response (attempt={attempt}, "
+                        f"json_mode={use_json_mode}, finish_reason={finish_reason})"
+                    )
+                return _normalize_result(parse_ai_json(content))
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "AI homepage brief attempt %s failed (json_mode=%s): %s",
+                    attempt,
+                    use_json_mode,
+                    exc,
+                )
+                if attempt == 1:
+                    time.sleep(1)
+        raise last_error or RuntimeError("AI homepage brief failed")
     except Exception as exc:
         logger.warning("AI homepage brief failed: %s", exc)
         return None
