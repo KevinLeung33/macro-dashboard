@@ -14,6 +14,7 @@ from services.daily_context import get_data_health, get_market_moves
 from services.composite_signals import compute_composite_signals
 from services.dashboard_cockpit import build_cockpit
 from services.home_brief import build_home_brief
+from services.ai_market_brief import generate_ai_market_brief
 from services.market_data import query_market_series
 from services.runtime_controls import TaskBusyError, hold_task, run_with_retry
 from services.time_utils import app_now
@@ -55,6 +56,7 @@ with col3:
 # ===== RESEARCH COCKPIT =====
 cockpit = build_cockpit()
 brief = build_home_brief(cockpit)
+ai_brief = generate_ai_market_brief(brief, cockpit)
 
 st.subheader("📝 市场简报")
 date_note = "、".join(brief["data_dates"]) if brief["data_dates"] else "暂无数据日期"
@@ -63,8 +65,22 @@ st.caption(f"基于当前已入库数据与近期新闻自动归纳 · 数据日
 brief_tabs = st.tabs(["今日", "本周", "中期"])
 for tab, key in zip(brief_tabs, ("today", "week", "medium")):
     with tab:
+        ai_period = (ai_brief or {}).get(key)
+        if ai_period and any(ai_period.values()):
+            if ai_period.get("judgement"):
+                st.markdown(f"**AI解读：{ai_period['judgement']}**")
+            if ai_period.get("explanation"):
+                st.write(ai_period["explanation"])
+            if ai_period.get("watch"):
+                st.caption(f"后续观察：{ai_period['watch']}")
+            st.divider()
         for item in brief[key]:
             st.markdown(f"- {item}")
+
+if ai_brief and ai_brief.get("overall"):
+    st.caption(f"AI总括：{ai_brief['overall']}")
+elif not ai_brief:
+    st.caption("AI解读暂不可用，当前内容仍以规则归纳和原始数据为准。")
 
 if brief["themes"]:
     with st.expander("查看四个研究主题的当前结论", expanded=True):
