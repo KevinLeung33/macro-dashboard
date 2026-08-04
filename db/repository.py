@@ -812,8 +812,8 @@ def upsert_news_cluster(cluster):
             """INSERT INTO news_clusters
                (cluster_key, title, summary, event_type, assets_impacted, direction,
                 severity, confidence, first_seen_at, last_seen_at, article_count,
-                primary_source, status, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                primary_source, status, merged_into, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                ON CONFLICT(cluster_key) DO UPDATE SET
                    title = excluded.title,
                    summary = excluded.summary,
@@ -827,6 +827,15 @@ def upsert_news_cluster(cluster):
                    article_count = excluded.article_count,
                    primary_source = excluded.primary_source,
                    status = excluded.status,
+                   merged_into = NULL,
+                   ai_status = CASE
+                       WHEN excluded.last_seen_at != news_clusters.last_seen_at
+                            OR excluded.article_count > news_clusters.article_count
+                       THEN 'pending' ELSE COALESCE(news_clusters.ai_status, 'pending') END,
+                   ai_updated_at = CASE
+                       WHEN excluded.last_seen_at != news_clusters.last_seen_at
+                            OR excluded.article_count > news_clusters.article_count
+                       THEN NULL ELSE news_clusters.ai_updated_at END,
                    updated_at = CURRENT_TIMESTAMP""",
             (
                 cluster["cluster_key"],
@@ -842,6 +851,7 @@ def upsert_news_cluster(cluster):
                 cluster.get("article_count", 0),
                 cluster.get("primary_source", ""),
                 cluster.get("status", "active"),
+                cluster.get("merged_into"),
             ),
         )
         row = conn.execute(
@@ -861,19 +871,184 @@ def add_article_to_cluster(article_id, cluster_id, similarity_score=0):
         )
 
 
-def query_news_clusters(limit=50, min_severity=1):
+def clear_article_cluster_links(article_ids):
+    ids = [int(article_id) for article_id in article_ids if article_id]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
     with get_db() as conn:
+        cur = conn.execute(
+            f"DELETE FROM news_article_clusters WHERE article_id IN ({placeholders})",
+            ids,
+        )
+        return cur.rowcount
+
+
+def deactivate_stale_news_clusters(days=3):
+    """Move events outside the current rebuild window out of the active feed."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE news_clusters
+               SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+               WHERE status = 'active'
+                 AND COALESCE(last_seen_at, updated_at) < datetime('now', ?)""",
+            (f"-{int(days)} days",),
+        )
+        return cur.rowcount
+
+
+def query_news_clusters(limit=50, min_severity=1, days=3, include_inactive=False):
+    with get_db() as conn:
+        conditions = ["severity >= ?"]
+        params = [min_severity]
+        if not include_inactive:
+            conditions.append("status = 'active'")
+            conditions.append("merged_into IS NULL")
+        if days is not None:
+            conditions.append("COALESCE(last_seen_at, updated_at) >= datetime('now', ?)")
+            params.append(f"-{int(days)} days")
+        params.append(limit)
         rows = conn.execute(
-            """SELECT id, cluster_key, title, summary, event_type, assets_impacted,
+            f"""SELECT id, cluster_key, title, summary, event_type, assets_impacted,
                       direction, severity, confidence, first_seen_at, last_seen_at,
-                      article_count, primary_source, status, created_at, updated_at
+                      article_count, primary_source, status, merged_into,
+                      ai_status, ai_title, ai_summary, ai_implications, ai_watch_next,
+                      ai_updated_at, created_at, updated_at
                FROM news_clusters
-               WHERE severity >= ?
+               WHERE {' AND '.join(conditions)}
                ORDER BY severity DESC, last_seen_at DESC
                LIMIT ?""",
-            (min_severity, limit),
+            params,
         ).fetchall()
     return rows
+
+
+def update_news_cluster_ai(cluster_id, status="complete", title="", summary="",
+                           implications="", watch_next=""):
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE news_clusters
+               SET ai_status = ?, ai_title = ?, ai_summary = ?,
+                   ai_implications = ?, ai_watch_next = ?,
+                   ai_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND status = 'active'""",
+            (status, title, summary, implications, watch_next, cluster_id),
+        )
+
+
+def merge_news_clusters(survivor_id, duplicate_ids):
+    """Merge duplicate event rows while preserving article and research lineage."""
+    duplicate_ids = sorted({int(item) for item in duplicate_ids if item and int(item) != int(survivor_id)})
+    if not duplicate_ids:
+        return 0
+    placeholders = ",".join("?" for _ in duplicate_ids)
+    with get_db() as conn:
+        survivor = conn.execute(
+            "SELECT * FROM news_clusters WHERE id = ? AND status = 'active'",
+            (survivor_id,),
+        ).fetchone()
+        duplicates = conn.execute(
+            f"SELECT * FROM news_clusters WHERE id IN ({placeholders}) AND status = 'active'",
+            duplicate_ids,
+        ).fetchall()
+        if not survivor or not duplicates:
+            return 0
+
+        rows = [survivor, *duplicates]
+
+        def split_csv(value):
+            return {item.strip() for item in str(value or '').split(',') if item.strip()}
+
+        assets = set().union(*(split_csv(row['assets_impacted']) for row in rows))
+        directions = set().union(*(split_csv(row['direction']) for row in rows))
+        first_values = [str(row['first_seen_at']) for row in rows if row['first_seen_at']]
+        last_values = [str(row['last_seen_at']) for row in rows if row['last_seen_at']]
+        severity = max(int(row['severity'] or 1) for row in rows)
+        confidence = max(float(row['confidence'] or 0.5) for row in rows)
+        article_count = conn.execute(
+            f"""SELECT COUNT(DISTINCT article_id) FROM news_article_clusters
+                WHERE cluster_id = ? OR cluster_id IN ({placeholders})""",
+            [survivor_id, *duplicate_ids],
+        ).fetchone()[0]
+
+        for duplicate_id in duplicate_ids:
+            conn.execute(
+                """INSERT OR IGNORE INTO news_article_clusters
+                   (article_id, cluster_id, similarity_score, created_at)
+                   SELECT article_id, ?, similarity_score, created_at
+                   FROM news_article_clusters WHERE cluster_id = ?""",
+                (survivor_id, duplicate_id),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO news_cluster_indicator_links
+                   (cluster_id, source, series_id, label, link_reason, created_at)
+                   SELECT ?, source, series_id, label, link_reason, created_at
+                   FROM news_cluster_indicator_links WHERE cluster_id = ?""",
+                (survivor_id, duplicate_id),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO news_cluster_hypothesis_links
+                   (cluster_id, hypothesis_id, match_score, match_reason, created_at)
+                   SELECT ?, hypothesis_id, match_score, match_reason, created_at
+                   FROM news_cluster_hypothesis_links WHERE cluster_id = ?""",
+                (survivor_id, duplicate_id),
+            )
+
+        # A previously sent duplicate must not become a new alert after merging.
+        sent_duplicate = conn.execute(
+            f"SELECT 1 FROM news_alerts WHERE cluster_id IN ({placeholders}) AND status = 'sent' LIMIT 1",
+            duplicate_ids,
+        ).fetchone()
+        survivor_alert = conn.execute(
+            "SELECT 1 FROM news_alerts WHERE cluster_id = ?", (survivor_id,)
+        ).fetchone()
+        if sent_duplicate and survivor_alert:
+            conn.execute(
+                "UPDATE news_alerts SET status = 'sent', alerted_at = COALESCE(alerted_at, CURRENT_TIMESTAMP) WHERE cluster_id = ?",
+                (survivor_id,),
+            )
+        elif sent_duplicate and not survivor_alert:
+            conn.execute(
+                """INSERT INTO news_alerts
+                   (cluster_id, severity, status, alerted_at, attempt_count, updated_at)
+                   VALUES (?, ?, 'sent', CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP)""",
+                (survivor_id, severity),
+            )
+
+        conn.execute(
+            """UPDATE news_clusters
+               SET assets_impacted = ?, direction = ?, severity = ?, confidence = ?,
+                   first_seen_at = ?, last_seen_at = ?, article_count = ?,
+                   status = 'active', merged_into = NULL, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (",".join(sorted(assets)), ",".join(sorted(directions)), severity,
+             confidence, min(first_values) if first_values else survivor['first_seen_at'],
+             max(last_values) if last_values else survivor['last_seen_at'],
+             article_count, survivor_id),
+        )
+        conn.execute(
+            f"""UPDATE news_clusters
+                SET status = 'merged', merged_into = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})""",
+            [survivor_id, *duplicate_ids],
+        )
+        conn.execute(
+            f"DELETE FROM news_article_clusters WHERE cluster_id IN ({placeholders})",
+            duplicate_ids,
+        )
+        conn.execute(
+            f"DELETE FROM news_cluster_indicator_links WHERE cluster_id IN ({placeholders})",
+            duplicate_ids,
+        )
+        conn.execute(
+            f"DELETE FROM news_cluster_hypothesis_links WHERE cluster_id IN ({placeholders})",
+            duplicate_ids,
+        )
+        conn.execute(
+            f"DELETE FROM news_alerts WHERE cluster_id IN ({placeholders})",
+            duplicate_ids,
+        )
+    return len(duplicates)
 
 
 def query_cluster_articles(cluster_id):

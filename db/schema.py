@@ -35,6 +35,15 @@ _COMPATIBLE_COLUMNS = {
     "ai_analyses": {
         "prompt_version": "TEXT DEFAULT ''",
     },
+    "news_clusters": {
+        "merged_into": "INTEGER",
+        "ai_status": "TEXT DEFAULT 'pending'",
+        "ai_title": "TEXT DEFAULT ''",
+        "ai_summary": "TEXT DEFAULT ''",
+        "ai_implications": "TEXT DEFAULT ''",
+        "ai_watch_next": "TEXT DEFAULT ''",
+        "ai_updated_at": "TIMESTAMP",
+    },
 }
 
 
@@ -386,12 +395,21 @@ def init_db():
                 article_count INTEGER DEFAULT 0,
                 primary_source TEXT DEFAULT '',
                 status TEXT DEFAULT 'active',
+                merged_into INTEGER,
+                ai_status TEXT DEFAULT 'pending',
+                ai_title TEXT DEFAULT '',
+                ai_summary TEXT DEFAULT '',
+                ai_implications TEXT DEFAULT '',
+                ai_watch_next TEXT DEFAULT '',
+                ai_updated_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE INDEX IF NOT EXISTS idx_news_clusters_recent
                 ON news_clusters(last_seen_at, severity);
+            CREATE INDEX IF NOT EXISTS idx_news_clusters_status
+                ON news_clusters(status, last_seen_at, severity);
 
             CREATE TABLE IF NOT EXISTS news_article_clusters (
                 article_id INTEGER NOT NULL,
@@ -452,6 +470,13 @@ def init_db():
         _ensure_column(conn, "news_articles", "processing_attempts")
         _ensure_column(conn, "news_articles", "processing_updated_at")
         _ensure_column(conn, "ai_analyses", "prompt_version")
+        _ensure_column(conn, "news_clusters", "merged_into")
+        _ensure_column(conn, "news_clusters", "ai_status")
+        _ensure_column(conn, "news_clusters", "ai_title")
+        _ensure_column(conn, "news_clusters", "ai_summary")
+        _ensure_column(conn, "news_clusters", "ai_implications")
+        _ensure_column(conn, "news_clusters", "ai_watch_next")
+        _ensure_column(conn, "news_clusters", "ai_updated_at")
         # This index must be created after the compatibility migration above.
         # Older databases do not yet have processing_status when executescript runs.
         conn.execute(

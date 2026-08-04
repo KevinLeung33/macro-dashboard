@@ -1,5 +1,6 @@
 """Rule-based news clustering for analyzed financial news."""
 import json
+import hashlib
 import logging
 import re
 from collections import Counter
@@ -7,6 +8,8 @@ from datetime import datetime
 
 from db.repository import (
     add_article_to_cluster,
+    clear_article_cluster_links,
+    deactivate_stale_news_clusters,
     mark_articles_clustered,
     query_news_clusters,
     query_recent_analyzed_articles,
@@ -114,10 +117,15 @@ def _score(item, cluster):
 
 
 def _cluster_key(item):
-    date_key = item["published_at"].strftime("%Y%m%d")
     asset_key = "-".join(sorted(item["assets"])) or "noasset"
-    top_tokens = "-".join(sorted(list(item["tokens"]))[:3]) or "notitle"
-    return f"{date_key}:{item['event_type']}:{asset_key}:{top_tokens}"
+    if item["tokens"]:
+        title_key = "-".join(sorted(item["tokens"])[:8])
+    else:
+        normalized = re.sub(r"\s+", " ", item["title"].lower()).strip()[:120]
+        title_key = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12] or "notitle"
+    # Do not include the publication date: the same event can be reported over
+    # several days and should update one persistent event row.
+    return f"{item['event_type']}:{asset_key}:{title_key}"
 
 
 def _new_cluster(item):
@@ -174,6 +182,7 @@ def _serializable(cluster):
 
 
 def build_news_clusters(days=3, limit=200, threshold=5):
+    deactivated = deactivate_stale_news_clusters(days=days)
     rows = query_recent_analyzed_articles(days=days, limit=limit)
     items = [_features(row) for row in rows]
     clusters = []
@@ -202,6 +211,7 @@ def build_news_clusters(days=3, limit=200, threshold=5):
         if cluster_id:
             saved_clusters[id(cluster)] = cluster_id
 
+    clear_article_cluster_links([item["article_id"] for item in items])
     linked = 0
     for article_id, cluster, score in assignments:
         cluster_id = saved_clusters.get(id(cluster))
@@ -211,6 +221,12 @@ def build_news_clusters(days=3, limit=200, threshold=5):
 
     mark_articles_clustered([article_id for article_id, _cluster, _score in assignments])
     try:
+        from services.news_cluster_ai import consolidate_news_clusters
+        ai_consolidation = consolidate_news_clusters(days=days)
+    except Exception as exc:
+        logger.warning("News event consolidation skipped: %s", exc)
+        ai_consolidation = {"groups": 0, "merged": 0, "ai_conclusions": 0, "error": str(exc)}
+    try:
         from services.news_research_links import refresh_news_research_links
         research_links = refresh_news_research_links()
     except Exception as exc:
@@ -219,6 +235,8 @@ def build_news_clusters(days=3, limit=200, threshold=5):
 
     return {
         "articles": len(items), "clusters": len(clusters), "linked": linked,
+        "deactivated": deactivated, "merged": ai_consolidation.get("merged", 0),
+        "ai_conclusions": ai_consolidation.get("ai_conclusions", 0),
         "research_links": research_links,
     }
 

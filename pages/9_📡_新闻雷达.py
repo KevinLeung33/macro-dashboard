@@ -66,9 +66,12 @@ with tab0:
         min_cluster_sev = st.selectbox("最低严重度", [1, 2, 3, 4], index=2)
     with c3:
         if st.button("重建事件流", use_container_width=True, disabled=not admin_access) and require_admin("重建事件流"):
-            with st.spinner("正在聚类最近新闻..."):
+            with st.spinner("正在聚类并归并重复事件..."):
                 result = build_news_clusters(days=3)
-            st.success(f"聚类完成：{result['articles']}篇文章 → {result['clusters']}个事件")
+            st.success(
+                f"事件流完成：{result['articles']}篇文章 → {result['clusters']}个规则事件，"
+                f"合并 {result.get('merged', 0)} 个重复事件，生成 {result.get('ai_conclusions', 0)} 条统一结论"
+            )
     with c4:
         if st.button("刷新研究关联", use_container_width=True, disabled=not admin_access) and require_admin("刷新研究关联"):
             result = refresh_news_research_links()
@@ -87,14 +90,22 @@ with tab0:
         for row in clusters:
             sev_icon = {5: "🔴", 4: "🔴", 3: "🟡", 2: "⚪", 1: "⚪"}.get(row["severity"], "⚪")
             label = type_labels.get(row["event_type"], row["event_type"])
-            st.markdown(f"**{sev_icon} {label} · {row['article_count']}篇 · {row['title']}**")
+            display_title = row["ai_title"] or row["title"]
+            display_summary = row["ai_summary"] or row["summary"]
+            st.markdown(f"**{sev_icon} {label} · {row['article_count']}篇 · {display_title}**")
             st.caption(
                 f"{row['first_seen_at'] or '—'} → {row['last_seen_at'] or '—'} | "
                 f"来源 {row['primary_source'] or '—'} | 资产 {row['assets_impacted'] or '—'} | "
                 f"置信 {row['confidence']:.0%}"
             )
-            if row["summary"]:
-                st.write(row["summary"])
+            if display_summary:
+                if row["ai_summary"]:
+                    st.caption("AI 事件结论")
+                st.write(display_summary)
+            if row["ai_implications"]:
+                st.caption(f"影响解读：{row['ai_implications']}")
+            if row["ai_watch_next"]:
+                st.caption(f"下一步观察：{row['ai_watch_next']}")
             research_links = query_cluster_research_links(row["id"])
             if research_links["indicators"]:
                 indicator_text = " · ".join(
