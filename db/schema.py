@@ -57,6 +57,52 @@ def _ensure_column(conn, table, column):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def _ensure_news_cluster_schema(conn):
+    """Ensure the event-cluster table is usable even on a legacy database."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS news_clusters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cluster_key TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT DEFAULT '',
+            event_type TEXT DEFAULT 'other',
+            assets_impacted TEXT DEFAULT '',
+            direction TEXT DEFAULT '',
+            severity INTEGER DEFAULT 1,
+            confidence REAL DEFAULT 0.5,
+            first_seen_at TEXT,
+            last_seen_at TEXT,
+            article_count INTEGER DEFAULT 0,
+            primary_source TEXT DEFAULT '',
+            status TEXT DEFAULT 'active',
+            merged_into INTEGER,
+            ai_status TEXT DEFAULT 'pending',
+            ai_title TEXT DEFAULT '',
+            ai_summary TEXT DEFAULT '',
+            ai_implications TEXT DEFAULT '',
+            ai_watch_next TEXT DEFAULT '',
+            ai_updated_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    for column in (
+        "merged_into", "ai_status", "ai_title", "ai_summary",
+        "ai_implications", "ai_watch_next", "ai_updated_at",
+    ):
+        _ensure_column(conn, "news_clusters", column)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_clusters_status "
+        "ON news_clusters(status, last_seen_at, severity)"
+    )
+
+
+def ensure_news_cluster_schema():
+    """Run the small cluster-only migration for page or worker entry points."""
+    with get_db() as conn:
+        _ensure_news_cluster_schema(conn)
+
+
 def _is_locked_error(exc):
     msg = str(exc).lower()
     return "database is locked" in msg or "database is busy" in msg or "locked" in msg
@@ -457,6 +503,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_trans_hash ON translations(text_hash);
         """)
 
+        _ensure_news_cluster_schema(conn)
         # Add lineage and quality columns to databases created before this schema version.
         _ensure_column(conn, "time_series", "release_at")
         _ensure_column(conn, "time_series", "source_url")

@@ -4,10 +4,18 @@ import math
 import hashlib
 import logging
 
-from db.schema import get_db
+from db.schema import ensure_news_cluster_schema, get_db
 from db.sqlite_compat import sqlite_date
 
 logger = logging.getLogger(__name__)
+_NEWS_CLUSTER_SCHEMA_READY = False
+
+
+def _ensure_news_cluster_ready():
+    global _NEWS_CLUSTER_SCHEMA_READY
+    if not _NEWS_CLUSTER_SCHEMA_READY:
+        ensure_news_cluster_schema()
+        _NEWS_CLUSTER_SCHEMA_READY = True
 
 
 def _default_source_url(source, series_id):
@@ -807,6 +815,7 @@ def query_recent_analyzed_articles(days=3, limit=200):
 
 
 def upsert_news_cluster(cluster):
+    _ensure_news_cluster_ready()
     with get_db() as conn:
         conn.execute(
             """INSERT INTO news_clusters
@@ -898,6 +907,7 @@ def deactivate_stale_news_clusters(days=3):
 
 
 def query_news_clusters(limit=50, min_severity=1, days=3, include_inactive=False):
+    _ensure_news_cluster_ready()
     with get_db() as conn:
         conditions = ["severity >= ?"]
         params = [min_severity]
@@ -925,6 +935,7 @@ def query_news_clusters(limit=50, min_severity=1, days=3, include_inactive=False
 
 def update_news_cluster_ai(cluster_id, status="complete", title="", summary="",
                            implications="", watch_next=""):
+    _ensure_news_cluster_ready()
     with get_db() as conn:
         conn.execute(
             """UPDATE news_clusters
@@ -938,6 +949,7 @@ def update_news_cluster_ai(cluster_id, status="complete", title="", summary="",
 
 def merge_news_clusters(survivor_id, duplicate_ids):
     """Merge duplicate event rows while preserving article and research lineage."""
+    _ensure_news_cluster_ready()
     duplicate_ids = sorted({int(item) for item in duplicate_ids if item and int(item) != int(survivor_id)})
     if not duplicate_ids:
         return 0
