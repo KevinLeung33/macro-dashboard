@@ -138,11 +138,28 @@ def _group_payload(group):
 def _call_ai(group):
     key = os.getenv("OPENAI_API_KEY")
     if not key or "sk-your" in key:
+        from services.runtime_controls import notify_runtime_error
+
+        notify_runtime_error(
+            "news_refresh",
+            "OPENAI_API_KEY is not configured or still uses the placeholder",
+            "事件流保留规则聚类；未执行事件级 AI 合并",
+        )
         return None
 
     base = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
     model = os.getenv("OPENAI_MODEL", "deepseek-chat")
-    max_tokens = int(os.getenv("AI_NEWS_CLUSTER_MAX_TOKENS", "1600"))
+    try:
+        max_tokens = int(os.getenv("AI_NEWS_CLUSTER_MAX_TOKENS", "1600"))
+    except ValueError as exc:
+        from services.runtime_controls import notify_runtime_error
+
+        notify_runtime_error(
+            "news_refresh",
+            exc,
+            "事件流保留规则聚类；请检查 AI_NEWS_CLUSTER_MAX_TOKENS 配置",
+        )
+        return None
     payload = json.dumps(_group_payload(group), ensure_ascii=False, default=str)
     try:
         import openai
@@ -196,6 +213,13 @@ def _call_ai(group):
         raise last_error or RuntimeError("AI event consolidation failed")
     except Exception as exc:
         logger.warning("News event AI consolidation failed: %s", exc)
+        from services.runtime_controls import notify_runtime_error
+
+        notify_runtime_error(
+            "news_refresh",
+            exc,
+            "事件流保留规则聚类，未应用事件级 AI 合并结论",
+        )
         return None
 
 

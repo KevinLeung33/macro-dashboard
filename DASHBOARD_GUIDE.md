@@ -178,9 +178,9 @@ AI 日报会读取：
 - 你的研究假设、观点日志、观察项。
 - 自动关联到假设的指标和新闻证据。
 
-如果没有配置 AI key，系统会保存本地研究包，不会中断流程。
+如果没有配置 AI key，或 AI 调用失败，系统会保存包含“核心判断、短中期对比、新闻传导和接下来观察”的规则结论版日报，不会退化成只有数字的研究包；同时在 `macro-dashboard-server` 日志记录失败原因。AI 恢复后，下一次日报会自动切回 AI 文字报告。
 
-新闻 AI 分析要求模型返回 JSON。系统已经做了代码块/多余文字提取和字段归一化；如果仍出现 `Unterminated string`、`Expecting value` 之类日志，通常是请求侧输出上限太小、模型输出被截断，或模型返回了非 JSON。若使用长上下文/长输出模型，可以继续调大 `AI_ANALYZE_MAX_TOKENS` 和 `AI_DAILY_MAX_TOKENS`。
+新闻 AI 分析和 AI 日报要求模型返回 JSON。系统已经做了代码块/多余文字提取和字段归一化；日报还会在 JSON 模式空响应或解析失败时自动改用普通文本模式重试。如果仍出现 `Unterminated string`、`Expecting value`、`empty AI response` 或超时日志，通常是请求侧输出上限太小、模型输出被截断、网络/API 配置异常或模型返回了非 JSON。可以查看 `journalctl -u macro-dashboard-server -n 200 --no-pager | grep -Ei "AI daily report|openai|deepseek|timeout|json"` 定位原因。
 
 ## 5.1 首页简报与定期报告
 
@@ -317,6 +317,8 @@ API_AUTH_TOKEN=请替换为随机长字符串
 ALPHA_VANTAGE_KEY=可选，用于新闻与美股备选数据源
 NOTIFY_CHANNELS=telegram
 NOTIFY_ON_TASK_FAILURE=true
+NOTIFY_ON_RUNTIME_ERROR=true
+RUNTIME_ERROR_NOTIFY_COOLDOWN_SECONDS=900
 API_STATUS_COOLDOWN_SECONDS=5
 API_REFRESH_COOLDOWN_SECONDS=300
 API_CONTEXT_COOLDOWN_SECONDS=300
@@ -503,9 +505,11 @@ P1 新增数据源依赖外部接口，部署后先执行一次手动刷新，�
 
 这些验收需要在服务器的真实依赖、网络和供应商数据环境中完成，不能仅用本地 AST 检查替代。
 
-`NOTIFY_CHANNELS` 支持 `telegram,lark,email,webhook`，并会自动忽略逗号两侧空格。Alpha Vantage 新闻和行情使用同一个 `ALPHA_VANTAGE_KEY`；不再读取 `FINNHUB_API_KEY`。
+`NOTIFY_CHANNELS` 支持 `telegram,lark,email,webhook`，并会自动忽略逗号两侧空格。服务器任务失败和运行告警读取这里的渠道配置；网页“通知规则”中的渠道主要用于紧急新闻推送。Alpha Vantage 新闻和行情使用同一个 `ALPHA_VANTAGE_KEY`；不再读取 `FINNHUB_API_KEY`。
 
 当任务重试耗尽后，若 `NOTIFY_ON_TASK_FAILURE=true`，系统会通过 `NOTIFY_CHANNELS` 配置的 Telegram、飞书、Email 或 Webhook 渠道发送失败通知。通知发送本身不会阻塞任务状态记录；即使通知渠道不可用，也可以在 `runtime/task_status.json` 和日志中查看失败原因。
+
+对于“任务没有失败、但内部发生了可恢复异常”的情况，例如 AI 日报接口失败后自动生成规则版日报，系统会在 `NOTIFY_ON_RUNTIME_ERROR=true` 时发送“宏观看板运行告警”。日报和新闻分析会包含具体错误摘要以及已经采取的回退动作；同一个错误默认在 `RUNTIME_ERROR_NOTIFY_COOLDOWN_SECONDS=900` 秒内只推送一次，避免接口连续超时造成通知刷屏。服务器更新代码后需要重启 `macro-dashboard-server`，使 systemd 重新加载代码和 `.env`。
 
 ### 9.4 飞书日报卡片与故障告警
 
@@ -518,7 +522,7 @@ LARK_WEBHOOK_SECRET=飞书签名校验密钥   # 在机器人安全设置启用�
 DASHBOARD_PUBLIC_URL=https://你的看板域名
 ```
 
-飞书卡片由每日定时报告自动发送，标题为“宏观看板今日内容”；当数据抓取、新闻、AI、日报或备份任务在重试耗尽后失败时，会发送红色“宏观看板任务告警”卡片，包含任务名称和错误摘要。`DASHBOARD_PUBLIC_URL` 配置后，卡片会附带“打开宏观看板”按钮。
+飞书卡片由每日定时报告自动发送，标题为“宏观看板今日内容”；当数据抓取、新闻、AI、日报或备份任务在重试耗尽后失败时，会发送红色“宏观看板任务告警”卡片，包含任务名称和错误摘要。AI 调用虽回退成功但出现异常时，会发送红色“宏观看板运行告警”卡片。`DASHBOARD_PUBLIC_URL` 配置后，卡片会附带“打开宏观看板”按钮。
 
 Webhook 地址和签名密钥与 API Token 一样属于敏感配置，只保存在服务器 `.env`，不要提交到仓库。飞书自定义机器人支持交互式卡片；若开启签名校验，程序会按飞书要求附带时间戳和 HMAC-SHA256 签名。
 

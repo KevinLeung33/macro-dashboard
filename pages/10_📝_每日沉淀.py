@@ -25,7 +25,7 @@ with top_mid:
         if result:
             st.success("AI趋势日报已保存")
         else:
-            st.warning("AI未配置或调用失败，已保存本地研究包")
+            st.warning("AI暂不可用，已保存包含文字结论的规则版日报；请查看服务日志确认 AI 调用原因")
         st.markdown(markdown)
 with top_right:
     if st.button("生成研究包", use_container_width=True, disabled=not admin_access) and require_admin("生成研究包"):

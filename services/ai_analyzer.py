@@ -128,6 +128,8 @@ def run_analysis_pipeline(limit=15):
 
     recent_fps = get_recent_fingerprints(7)
     analyzed = 0
+    failed = 0
+    first_failure = None
 
     for art in articles:
         mark_article_analyzing(art["id"])
@@ -135,6 +137,8 @@ def run_analysis_pipeline(limit=15):
             result = ai_analyze(art["title"], art["summary"] or "")
         except Exception as exc:
             mark_article_failed(art["id"], str(exc))
+            failed += 1
+            first_failure = first_failure or exc
             continue
 
         # Post-check: is this really new?
@@ -167,12 +171,22 @@ def run_analysis_pipeline(limit=15):
         except Exception as exc:
             logger.exception("Failed to persist AI analysis for article=%s", art["id"])
             mark_article_failed(art["id"], f"AI analysis persistence failed: {exc}")
+            failed += 1
+            first_failure = first_failure or exc
             continue
         mark_article_analyzed(art["id"])
         recent_fps.add(fp)
         analyzed += 1
 
     logger.info(f"AI analyzed {analyzed}/{len(articles)} articles")
+    if failed:
+        from services.runtime_controls import notify_runtime_error
+
+        notify_runtime_error(
+            "news_refresh",
+            f"AI analysis failed for {failed}/{len(articles)} articles; first error: {first_failure}",
+            "失败文章已标记，成功分析的新闻仍会继续进入事件流和日报",
+        )
     try:
         from services.news_clusterer import build_news_clusters
         result = build_news_clusters(days=3)

@@ -1,7 +1,9 @@
 """Shared runtime controls for API, scheduler, and Streamlit jobs."""
+import hashlib
+import json
+import logging
 import os
 import re
-import json
 import threading
 import time
 from contextlib import contextmanager
@@ -38,6 +40,9 @@ class TaskTimeoutError(RuntimeError):
 _RATE_LOCK = threading.Lock()
 _LAST_CALLS = {}
 _STATUS_LOCK = threading.Lock()
+_RUNTIME_ERROR_LOCK = threading.Lock()
+_RUNTIME_ERROR_LAST_NOTIFIED = {}
+logger = logging.getLogger("runtime_controls")
 _DEFAULT_COOLDOWNS = {
     "status": 5,
     "refresh": 300,
@@ -178,6 +183,76 @@ def notify_task_failure(task_name, error):
         return notify(message, channels)
     except Exception:
         return {}
+
+
+def notify_runtime_error(task_name, error, details=""):
+    """Notify recoverable runtime errors without flooding configured channels.
+
+    Some tasks intentionally recover from upstream errors, such as using a
+    rule-based report when an AI call fails. Those tasks are successful from
+    the scheduler's perspective, so ``notify_task_failure`` is not called.
+    This helper keeps the recovery behavior while notifying the operator.
+    """
+    if os.getenv("NOTIFY_ON_RUNTIME_ERROR", "true").lower() not in ("1", "true", "yes"):
+        return {"disabled": True}
+
+    error_text = str(error or "Unknown runtime error").strip() or "Unknown runtime error"
+    error_text = error_text[:1000]
+    fingerprint = hashlib.sha256(
+        f"{task_name}|{error_text[:400]}".encode("utf-8", errors="replace")
+    ).hexdigest()
+    try:
+        cooldown = max(
+            0.0,
+            float(os.getenv("RUNTIME_ERROR_NOTIFY_COOLDOWN_SECONDS", "900")),
+        )
+    except ValueError:
+        cooldown = 900.0
+
+    now = time.monotonic()
+    with _RUNTIME_ERROR_LOCK:
+        previous = _RUNTIME_ERROR_LAST_NOTIFIED.get(fingerprint)
+        if previous is not None and now - previous < cooldown:
+            return {"suppressed": True, "fingerprint": fingerprint}
+        _RUNTIME_ERROR_LAST_NOTIFIED[fingerprint] = now
+
+    detail_text = str(details or "").strip()
+    message = "\n".join(
+        part
+        for part in (
+            "宏观看板运行告警",
+            f"任务: {task_name}",
+            f"错误: {error_text}",
+            f"处理: {detail_text}" if detail_text else "",
+            f"相同错误 {int(cooldown)} 秒内不重复推送",
+        )
+        if part
+    )
+    try:
+        from services.notifier import notify
+
+        channels = parse_notify_channels()
+        results = notify(
+            message,
+            channels=channels,
+            title="宏观看板运行告警",
+            level="error",
+        )
+        sent = any(bool(value) for value in results.values())
+        if not sent:
+            logger.warning(
+                "Runtime error notification was not accepted by any channel: %s",
+                channels,
+            )
+        return {
+            "sent": sent,
+            "channels": channels,
+            "results": results,
+            "fingerprint": fingerprint,
+        }
+    except Exception as exc:  # pragma: no cover - notification backends are external
+        logger.exception("Runtime error notification failed: %s", exc)
+        return {"error": str(exc), "fingerprint": fingerprint}
 
 
 def run_with_retry(task_name, callback):

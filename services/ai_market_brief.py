@@ -152,6 +152,13 @@ def _signature(payload):
 def _call_ai(payload):
     key = os.getenv("OPENAI_API_KEY")
     if not key or "sk-your" in key:
+        from services.runtime_controls import notify_runtime_error
+
+        notify_runtime_error(
+            "homepage_brief",
+            "OPENAI_API_KEY is not configured or still uses the placeholder",
+            "首页保留规则版市场简报；请检查 systemd 使用的 .env 文件",
+        )
         return None
 
     base = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
@@ -212,6 +219,13 @@ def _call_ai(payload):
         raise last_error or RuntimeError("AI homepage brief failed")
     except Exception as exc:
         logger.warning("AI homepage brief failed: %s", exc)
+        from services.runtime_controls import notify_runtime_error
+
+        notify_runtime_error(
+            "homepage_brief",
+            exc,
+            "首页保留规则版市场简报，数据页面仍可正常访问",
+        )
         return None
 
 

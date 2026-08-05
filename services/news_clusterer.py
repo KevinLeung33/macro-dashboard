@@ -225,12 +225,26 @@ def build_news_clusters(days=3, limit=200, threshold=5):
         ai_consolidation = consolidate_news_clusters(days=days)
     except Exception as exc:
         logger.warning("News event consolidation skipped: %s", exc)
+        from services.runtime_controls import notify_runtime_error
+
+        notify_runtime_error(
+            "news_refresh",
+            exc,
+            "事件流保留规则聚类，事件级 AI 合并已跳过",
+        )
         ai_consolidation = {"groups": 0, "merged": 0, "ai_conclusions": 0, "error": str(exc)}
     try:
         from services.news_research_links import refresh_news_research_links
         research_links = refresh_news_research_links()
     except Exception as exc:
         logger.warning("News research linking skipped: %s", exc)
+        from services.runtime_controls import notify_runtime_error
+
+        notify_runtime_error(
+            "news_refresh",
+            exc,
+            "新闻仍保留，但暂未生成与指标/研究假设的关联",
+        )
         research_links = {"clusters": 0, "indicator_links": 0, "hypothesis_links": 0}
 
     return {
