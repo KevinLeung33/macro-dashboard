@@ -1,6 +1,89 @@
 """Robust helpers for parsing JSON returned by chat models."""
+import os
 import json
 import re
+
+
+class AIResponseError(ValueError):
+    """Raised when a model response cannot be safely consumed."""
+
+
+class AIResponseTruncated(AIResponseError):
+    """Raised when the provider stopped before returning a complete answer."""
+
+
+def ai_thinking_options(model=None, base_url=None):
+    """Return DeepSeek thinking-mode options for structured, short outputs.
+
+    Thinking mode is useful for difficult analysis, but it is counterproductive
+    for small JSON payloads: the output budget can be consumed before the final
+    ``content`` field is produced.  Only add the provider-specific option for
+    DeepSeek requests so OpenAI-compatible providers are not affected.
+    """
+    provider_text = f"{model or ''} {base_url or ''}".lower()
+    if "deepseek" not in provider_text:
+        return {}
+
+    mode = os.getenv("AI_THINKING_MODE", "disabled").strip().lower()
+    if mode in {"disabled", "disable", "off", "false", "none"}:
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    if mode in {"enabled", "enable", "on", "true"}:
+        return {"extra_body": {"thinking": {"type": "enabled"}}}
+    return {}
+
+
+def _usage_summary(response):
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {}
+    fields = (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "reasoning_tokens",
+    )
+    result = {}
+    for field in fields:
+        value = getattr(usage, field, None)
+        if value is not None:
+            result[field] = value
+    return result
+
+
+def extract_response_content(response):
+    """Extract final text and metadata, rejecting incomplete responses early."""
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        raise AIResponseError("AI response has no choices")
+
+    choice = choices[0]
+    finish_reason = getattr(choice, "finish_reason", None)
+    message = getattr(choice, "message", None)
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                parts.append(str(part.get("text") or part.get("content") or ""))
+            else:
+                parts.append(str(getattr(part, "text", "") or ""))
+        content = "".join(parts)
+
+    usage = _usage_summary(response)
+    metadata = {
+        "finish_reason": finish_reason,
+        "usage": usage,
+        "content_chars": len(str(content or "")),
+        "reasoning_chars": len(str(getattr(message, "reasoning_content", "") or "")),
+    }
+
+    if finish_reason == "length":
+        raise AIResponseTruncated(f"AI response truncated: {metadata}")
+    if finish_reason and finish_reason not in {"stop"}:
+        raise AIResponseError(f"AI response stopped with {finish_reason}: {metadata}")
+    if not content or not str(content).strip():
+        raise AIResponseError(f"empty AI response: {metadata}")
+    return str(content), metadata
 
 
 def parse_ai_json(text):

@@ -5,7 +5,7 @@ import os
 import time
 
 from db.repository import upsert_daily_report
-from services.ai_json import parse_ai_json
+from services.ai_json import ai_thinking_options, extract_response_content, parse_ai_json
 from services.daily_context import build_context_markdown, build_daily_context
 from services.signal_review import save_signal_snapshots
 from services.time_utils import app_now
@@ -48,7 +48,7 @@ SYSTEM_PROMPT = """你是一个面向中美宏观与crypto投资研究的分析�
 如果输入里有用户研究假设、观点日志或观察项，请结合 auto_links、linked_data、linked_news 明确说明今天的证据支持、削弱还是没有改变这些想法。
 多窗口趋势用于区分短期噪音和中期方向：7天变化代表短线冲击，30/90天变化代表趋势背景。
 组合信号是规则系统给出的初步判断锚点；可以引用，但如果证据不足或缺数据，需要指出置信度限制。
-语言使用中文，表达要短而明确。
+语言使用中文，表达要短而明确。数组最多输出 4 项，每个字符串尽量控制在 80 字以内。
 输出优先给出文字判断，不要把输入中的数字原样堆成清单：executive_summary 必须明确说明当前处于什么状态、短期与中期是否一致、最重要的驱动是什么；key_changes 和 trend_evolution 必须写出“为什么重要”和“这意味着什么”。数字只作为结论后的证据，不要替代结论。"""
 
 
@@ -123,30 +123,17 @@ def _call_ai(context):
                     "temperature": 0.2 if use_json_mode else 0.1,
                     "max_tokens": max_tokens if use_json_mode else min(max_tokens * 2, 8192),
                 }
+                request.update(ai_thinking_options(model=model, base_url=base))
                 if use_json_mode:
                     request["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**request)
-                if not response.choices:
-                    raise ValueError("AI response has no choices")
-                choice = response.choices[0]
-                content = getattr(choice.message, "content", None)
-                finish_reason = getattr(choice, "finish_reason", None)
-                if isinstance(content, list):
-                    content = "".join(
-                        str(part.get("text", ""))
-                        for part in content if isinstance(part, dict)
-                    )
-                if not content or not str(content).strip():
-                    raise ValueError(
-                        f"empty AI response (attempt={attempt}, "
-                        f"json_mode={use_json_mode}, finish_reason={finish_reason})"
-                    )
+                content, metadata = extract_response_content(response)
                 result = parse_ai_json(content)
                 if not isinstance(result, dict):
                     raise ValueError("AI daily report response is not an object")
                 logger.info(
-                    "AI daily report succeeded (attempt=%s, json_mode=%s, finish_reason=%s)",
-                    attempt, use_json_mode, finish_reason,
+                    "AI daily report succeeded (attempt=%s, json_mode=%s, metadata=%s)",
+                    attempt, use_json_mode, metadata,
                 )
                 return result
             except Exception as exc:

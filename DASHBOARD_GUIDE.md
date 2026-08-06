@@ -161,6 +161,8 @@ AI 日报入口在“每日沉淀”页面，也可以由 `server.py` 定时生�
 OPENAI_API_KEY=你的key
 OPENAI_BASE_URL=https://api.deepseek.com
 OPENAI_MODEL=deepseek-chat
+# 结构化摘要默认关闭 DeepSeek thinking mode，避免短 JSON 输出被推理预算耗尽后截断。
+AI_THINKING_MODE=disabled
 AI_ANALYZE_MAX_TOKENS=4096
 AI_DAILY_MAX_TOKENS=8192
 AI_MARKET_BRIEF_MAX_TOKENS=1200

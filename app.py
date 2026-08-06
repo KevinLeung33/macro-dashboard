@@ -209,8 +209,8 @@ health_rows = get_data_health()
 if health_rows:
     st.subheader("🩺 数据状态")
     health_cols = st.columns(min(len(health_rows), 6))
-    status_icon = {"fresh": "🟢", "quality_warning": "🟡", "stale": "🟡", "old": "🔴", "error": "🔴", "unknown": "⚪"}
-    status_text = {"fresh": "新鲜", "quality_warning": "有质量提醒", "stale": "偏旧", "old": "过旧", "error": "失败", "unknown": "未知"}
+    status_icon = {"fresh": "🟢", "quality_warning": "🟡", "stale": "🟡", "old": "🔴", "error": "🔴", "unavailable": "⚪", "unknown": "⚪"}
+    status_text = {"fresh": "新鲜", "quality_warning": "有质量提醒", "stale": "偏旧", "old": "过旧", "error": "失败", "unavailable": "未配置/不可用", "unknown": "未知"}
     for i, item in enumerate(health_rows[:6]):
         with health_cols[i % len(health_cols)]:
             age = item.get("age_hours")
@@ -220,14 +220,15 @@ if health_rows:
                 status_text.get(item["status"], item["status"]),
                 f"{item['series_count']}项 · {age_txt}",
             )
-    stale = [x for x in health_rows if x.get("status") in ("quality_warning", "stale", "old", "error")]
+    stale = [x for x in health_rows if x.get("status") in ("quality_warning", "stale", "old", "error", "unavailable")]
     if stale:
         with st.expander("查看数据源异常/过期详情", expanded=False):
             for item in stale:
                 msg = item.get("last_error") or "最近没有错误信息"
                 quality = item.get("quality_issue_count", 0)
                 quality_msg = f" · 质量提醒 {quality} 条" if quality else ""
-                st.caption(f"**{item['source']}** · 最新数据 {item.get('latest_data_date') or '—'} · 最近抓取 {item.get('latest_fetched_at') or '—'}{quality_msg} · {msg}")
+                failed_series = f" · 指标 {item.get('last_series_id')}" if item.get("last_series_id") else ""
+                st.caption(f"**{item['source']}**{failed_series} · 最新数据 {item.get('latest_data_date') or '—'} · 最近成功抓取 {item.get('latest_fetched_at') or '—'} · 最近尝试 {item.get('last_fetch_attempt') or '—'}{quality_msg} · {msg}")
     st.divider()
 
 def _fred_val(df, sid):

@@ -107,7 +107,7 @@ def build_home_brief(cockpit):
         "generated_at": app_now().strftime("%Y-%m-%d %H:%M"),
         "data_dates": sorted({item.get("date") for item in moves if item.get("date")}, reverse=True)[:3],
         "health_warning_count": sum(
-            1 for item in health if item.get("status") in ("quality_warning", "stale", "old", "error")
+            1 for item in health if item.get("status") in ("quality_warning", "stale", "old", "error", "unavailable")
         ),
         "today": today,
         "week": week,

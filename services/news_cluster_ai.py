@@ -13,7 +13,7 @@ from db.repository import (
     query_news_clusters,
     update_news_cluster_ai,
 )
-from services.ai_json import parse_ai_json
+from services.ai_json import ai_thinking_options, extract_response_content, parse_ai_json
 
 
 logger = logging.getLogger("news_cluster_ai")
@@ -177,18 +177,15 @@ def _call_ai(group):
                     "temperature": 0.1,
                     "max_tokens": max_tokens if use_json_mode else min(max_tokens * 2, 4096),
                 }
+                request.update(ai_thinking_options(model=model, base_url=base))
                 if use_json_mode:
                     request["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**request)
-                if not response.choices:
-                    raise ValueError("AI response has no choices")
-                content = getattr(response.choices[0].message, "content", None)
-                if isinstance(content, list):
-                    content = "".join(
-                        str(part.get("text", "")) for part in content if isinstance(part, dict)
-                    )
-                if not content or not str(content).strip():
-                    raise ValueError(f"empty AI response (attempt={attempt}, json_mode={use_json_mode})")
+                content, metadata = extract_response_content(response)
+                logger.info(
+                    "News event AI response attempt=%s json_mode=%s metadata=%s",
+                    attempt, use_json_mode, metadata,
+                )
                 parsed = parse_ai_json(content)
                 if not isinstance(parsed, dict):
                     raise ValueError("AI event consolidation response is not an object")

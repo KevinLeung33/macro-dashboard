@@ -18,7 +18,7 @@ def build_cockpit():
     review = cockpit_signal_stats()
     asset_biases = build_asset_biases(signals)
 
-    stale = [x for x in health if x.get("status") in ("stale", "old", "error")]
+    stale = [x for x in health if x.get("status") in ("stale", "old", "error", "unavailable")]
     active_signals = [s for s in signals if s.get("level") in ("red", "yellow", "blue") or s.get("score", 0) > 0]
     top_signal = active_signals[0] if active_signals else None
     top_move = moves[0] if moves else None

@@ -3,7 +3,7 @@ import json
 import logging
 import os
 
-from services.ai_json import parse_ai_json
+from services.ai_json import ai_thinking_options, extract_response_content, parse_ai_json
 
 logger = logging.getLogger("ai_analyzer")
 PROMPT_VERSION = "news-structured-v3"
@@ -37,17 +37,20 @@ def ai_analyze(title, content=""):
     try:
         import openai
         client = openai.OpenAI(api_key=key, base_url=base)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
+        request = {
+            "model": model,
+            "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"标题: {title}\n内容: {content[:800]}"},
             ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=max_tokens,
-        )
-        raw = resp.choices[0].message.content
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+        }
+        request.update(ai_thinking_options(model=model, base_url=base))
+        resp = client.chat.completions.create(**request)
+        raw, metadata = extract_response_content(resp)
+        logger.info("AI news analysis response metadata=%s", metadata)
         try:
             return _normalize_result(parse_ai_json(raw))
         except Exception as parse_error:

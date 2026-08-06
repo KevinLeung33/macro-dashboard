@@ -147,7 +147,13 @@ def upsert_series_meta(source, series_id, meta):
 def query_series(source, series_id, start_date=None, end_date=None):
     start_date = sqlite_date(start_date)
     end_date = sqlite_date(end_date)
-    query = "SELECT date, value FROM time_series WHERE source = ? AND series_id = ?"
+    # Older databases may contain legacy rows with human-readable error text
+    # in the date column.  They must never participate in time-series queries.
+    query = (
+        "SELECT date, value FROM time_series "
+        "WHERE source = ? AND series_id = ? AND date GLOB '????-??-??' "
+        "AND value IS NOT NULL"
+    )
     params = [source, series_id]
     if start_date:
         query += " AND date >= ?"
@@ -170,8 +176,12 @@ def query_latest_values(source, category=None):
                    FROM time_series t
                    JOIN series_meta m ON t.source = m.source AND t.series_id = m.series_id
                    WHERE t.source = ? AND m.category = ?
+                   AND t.date GLOB '????-??-??'
+                   AND t.value IS NOT NULL
                    AND t.date = (SELECT MAX(t2.date) FROM time_series t2
-                                 WHERE t2.source = t.source AND t2.series_id = t.series_id)""",
+                                 WHERE t2.source = t.source AND t2.series_id = t.series_id
+                                 AND t2.date GLOB '????-??-??'
+                                 AND t2.value IS NOT NULL)""",
                 (source, category),
             ).fetchall()
         else:
@@ -180,8 +190,12 @@ def query_latest_values(source, category=None):
                    FROM time_series t
                    JOIN series_meta m ON t.source = m.source AND t.series_id = m.series_id
                    WHERE t.source = ?
+                   AND t.date GLOB '????-??-??'
+                   AND t.value IS NOT NULL
                    AND t.date = (SELECT MAX(t2.date) FROM time_series t2
-                                 WHERE t2.source = t.source AND t2.series_id = t.series_id)""",
+                                 WHERE t2.source = t.source AND t2.series_id = t.series_id
+                                 AND t2.date GLOB '????-??-??'
+                                 AND t2.value IS NOT NULL)""",
                 (source,),
             ).fetchall()
     if not rows:
@@ -191,15 +205,21 @@ def query_latest_values(source, category=None):
 
 def query_source_health():
     """Return one health row per source from stored time series and fetch logs."""
+    from config.data_sources import DATA_SOURCES
+
+    known_sources = set(DATA_SOURCES)
     with get_db() as conn:
         rows = conn.execute(
             """SELECT
                    ts.source,
-                   COUNT(DISTINCT ts.series_id) AS series_count,
+                   COUNT(DISTINCT CASE
+                       WHEN ts.date GLOB '????-??-??' AND ts.value IS NOT NULL
+                       THEN ts.series_id END) AS series_count,
                    (SELECT COUNT(*) FROM data_quality_issues qi
                     WHERE qi.source = ts.source AND qi.resolved = 0) AS quality_issue_count,
-                   MAX(ts.date) AS latest_data_date,
+                   MAX(CASE WHEN ts.date GLOB '????-??-??' THEN ts.date END) AS latest_data_date,
                    MAX(ts.fetched_at) AS latest_fetched_at,
+                   fl.series_id AS last_series_id,
                    fl.status AS last_status,
                    fl.error_message AS last_error,
                    fl.created_at AS last_fetch_attempt
@@ -213,6 +233,25 @@ def query_source_health():
                GROUP BY ts.source
                ORDER BY ts.source"""
         ).fetchall()
+
+        # A source with no successfully stored rows is otherwise invisible in
+        # the health panel.  Include its latest failed/skipped fetch attempt so
+        # unavailable inputs are not mistaken for healthy missing data.
+        fetch_only = conn.execute(
+            """SELECT fl.source, fl.series_id, fl.created_at, fl.status, fl.error_message
+               FROM fetch_log fl
+               WHERE fl.id = (
+                   SELECT fl2.id FROM fetch_log fl2
+                   WHERE fl2.source = fl.source
+                   ORDER BY fl2.created_at DESC
+                   LIMIT 1
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM time_series ts WHERE ts.source = fl.source
+               )
+               ORDER BY fl.source"""
+        ).fetchall()
+        fetch_only = [row for row in fetch_only if row["source"] in known_sources]
 
         news = conn.execute(
             """SELECT
@@ -230,6 +269,17 @@ def query_source_health():
         ).fetchone()
 
     out = [dict(r) for r in rows]
+    out.extend({
+        "source": row["source"],
+        "series_count": 0,
+        "quality_issue_count": 0,
+        "latest_data_date": None,
+        "latest_fetched_at": row["created_at"],
+        "last_series_id": row["series_id"],
+        "last_status": row["status"],
+        "last_error": row["error_message"] or "",
+        "last_fetch_attempt": row["created_at"],
+    } for row in fetch_only)
     if news and news["article_count"]:
         out.append({
             "source": "news",

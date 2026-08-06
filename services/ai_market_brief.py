@@ -10,7 +10,7 @@ import os
 import threading
 import time
 
-from services.ai_json import parse_ai_json
+from services.ai_json import ai_thinking_options, extract_response_content, parse_ai_json
 
 
 logger = logging.getLogger("ai_market_brief")
@@ -39,7 +39,7 @@ SYSTEM_PROMPT = """你是宏观市场研究看板的文字解读助手。
   "overall": "一句话总结当前研究环境；如果数据质量不足，明确写出限制"
 }
 
-表达要求：中文、短句、克制、面向研究者。不要重复罗列所有数字，只引用最有代表性的1到3项证据。出现缺失或过期数据时，明确说明“数据不足/数据偏旧”，不要把缺失当成零。"""
+表达要求：中文、短句、克制、面向研究者。每个 judgement、explanation、watch 最多 2 句，不要重复罗列所有数字，只引用最有代表性的1到3项证据。出现缺失或过期数据时，明确说明“数据不足/数据偏旧”，不要把缺失当成零。"""
 
 
 _CACHE = {}
@@ -186,25 +186,15 @@ def _call_ai(payload):
                     "temperature": 0.2 if use_json_mode else 0.1,
                     "max_tokens": _max_tokens() if use_json_mode else min(_max_tokens() * 2, 4096),
                 }
+                request.update(ai_thinking_options(model=model, base_url=base))
                 if use_json_mode:
                     request["response_format"] = {"type": "json_object"}
                 response = client.chat.completions.create(**request)
-                if not response.choices:
-                    raise ValueError("AI response has no choices")
-                choice = response.choices[0]
-                content = getattr(choice.message, "content", None)
-                finish_reason = getattr(choice, "finish_reason", None)
-                if isinstance(content, list):
-                    content = "".join(
-                        str(part.get("text", ""))
-                        for part in content
-                        if isinstance(part, dict)
-                    )
-                if not content or not str(content).strip():
-                    raise ValueError(
-                        f"empty AI response (attempt={attempt}, "
-                        f"json_mode={use_json_mode}, finish_reason={finish_reason})"
-                    )
+                content, metadata = extract_response_content(response)
+                logger.info(
+                    "AI homepage brief response attempt=%s json_mode=%s metadata=%s",
+                    attempt, use_json_mode, metadata,
+                )
                 return _normalize_result(parse_ai_json(content))
             except Exception as exc:
                 last_error = exc

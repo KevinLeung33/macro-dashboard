@@ -145,7 +145,7 @@ def build_report(report_type="daily"):
         lines.append("")
 
     if report_type == "weekly":
-        stale = [item for item in get_data_health() if item.get("status") in ("quality_warning", "stale", "old", "error")]
+        stale = [item for item in get_data_health() if item.get("status") in ("quality_warning", "stale", "old", "error", "unavailable")]
         lines.append("**数据质量与下周观察**")
         if stale:
             for item in stale[:6]:

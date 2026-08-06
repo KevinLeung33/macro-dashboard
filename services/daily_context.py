@@ -84,8 +84,11 @@ def get_data_health():
         else:
             status = "old"
 
-        if str(row.get("last_status", "")).lower() == "error":
+        last_status = str(row.get("last_status", "")).lower()
+        if last_status == "error":
             status = "error"
+        elif last_status == "skipped":
+            status = "unavailable"
 
         rows.append({
             "source": row.get("source"),
@@ -93,9 +96,12 @@ def get_data_health():
             "quality_issue_count": int(row.get("quality_issue_count") or 0),
             "latest_data_date": row.get("latest_data_date"),
             "latest_fetched_at": fetched_at,
+            "last_fetch_attempt": row.get("last_fetch_attempt") or fetched_at,
+            "last_series_id": row.get("last_series_id") or "",
             "age_hours": age_hours,
             "status": status,
             "last_error": row.get("last_error") or "",
+            "last_status": last_status,
         })
         if rows[-1]["quality_issue_count"] > 0 and rows[-1]["status"] == "fresh":
             rows[-1]["status"] = "quality_warning"
