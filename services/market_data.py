@@ -4,21 +4,20 @@ from db.repository import query_series
 
 MARKET_PROVIDER_CHAIN = {
     "DX-Y.NYB": [
-        ("stooq", "DX-Y.NYB", "DXY"),
         ("yfinance", "DX-Y.NYB", "DXY"),
         ("fred", "DEXUSEU", "USD/EUR proxy"),
     ],
-    "MSTR": [("alpha_vantage", "MSTR", "MSTR"), ("stooq", "MSTR", "MSTR"), ("yfinance", "MSTR", "MSTR")],
-    "NVDA": [("alpha_vantage", "NVDA", "NVDA"), ("stooq", "NVDA", "NVDA"), ("yfinance", "NVDA", "NVDA")],
-    "MU": [("alpha_vantage", "MU", "MU"), ("stooq", "MU", "MU"), ("yfinance", "MU", "MU")],
-    "^GSPC": [("fred", "SP500", "SP500"), ("stooq", "^GSPC", "SP500"), ("yfinance", "^GSPC", "SP500")],
-    "^IXIC": [("fred", "NASDAQCOM", "NASDAQ"), ("stooq", "^IXIC", "NASDAQ"), ("yfinance", "^IXIC", "NASDAQ")],
-    "^DJI": [("fred", "DJIA", "DJIA"), ("stooq", "^DJI", "DJIA"), ("yfinance", "^DJI", "DJIA")],
-    "^RUT": [("stooq", "^RUT", "Russell 2000"), ("yfinance", "^RUT", "Russell 2000")],
-    "^VIX": [("fred", "VIXCLS", "VIX"), ("stooq", "^VIX", "VIX"), ("yfinance", "^VIX", "VIX")],
-    "GC=F": [("stooq", "GC=F", "Gold futures"), ("yfinance", "GC=F", "Gold futures")],
-    "CL=F": [("stooq", "CL=F", "WTI futures"), ("yfinance", "CL=F", "WTI futures")],
-    "BTC-USD": [("fred", "CBBTCUSD", "BTC"), ("yfinance", "BTC-USD", "BTC")],
+    "MSTR": [("yfinance", "MSTR", "MSTR"), ("alpha_vantage", "MSTR", "MSTR")],
+    "NVDA": [("yfinance", "NVDA", "NVDA"), ("alpha_vantage", "NVDA", "NVDA")],
+    "MU": [("yfinance", "MU", "MU"), ("alpha_vantage", "MU", "MU")],
+    "^GSPC": [("fred", "SP500", "SP500"), ("yfinance", "^GSPC", "SP500")],
+    "^IXIC": [("fred", "NASDAQCOM", "NASDAQ"), ("yfinance", "^IXIC", "NASDAQ")],
+    "^DJI": [("fred", "DJIA", "DJIA"), ("yfinance", "^DJI", "DJIA")],
+    "^RUT": [("yfinance", "^RUT", "Russell 2000")],
+    "^VIX": [("fred", "VIXCLS", "VIX"), ("yfinance", "^VIX", "VIX")],
+    "GC=F": [("yfinance", "GC=F", "Gold futures")],
+    "CL=F": [("yfinance", "CL=F", "WTI futures")],
+    "BTC-USD": [("fred", "CBBTCUSD", "BTC"), ("binance_spot", "BTC-USD", "BTC")],
 }
 
 

@@ -7,7 +7,7 @@
 set -e
 
 APP_DIR="/opt/macro-dashboard"
-PYTHON=$(which python3 || which python)
+PYTHON="$APP_DIR/.venv/bin/python"
 
 echo "=== 宏观看板部署 ==="
 echo "目标目录: $APP_DIR"
@@ -19,12 +19,15 @@ cp -r ./* $APP_DIR/
 
 # 2. 安装依赖
 cd $APP_DIR
+if [ ! -x "$PYTHON" ]; then
+    python3 -m venv "$APP_DIR/.venv"
+fi
 echo "安装Python依赖..."
-$PYTHON -m pip install -r requirements.txt -q
+"$PYTHON" -m pip install -r requirements.txt -q
 
 # 3. 初始化数据库
 echo "初始化数据库 + 首次拉取数据..."
-$PYTHON -c "from db.schema import init_db; init_db(); from data.pipeline import fetch_all; fetch_all(include_global=False, incremental=False)"
+"$PYTHON" -c "from db.schema import init_db; init_db(); from data.pipeline import fetch_all; fetch_all(include_global=False, incremental=False)"
 echo "首次数据拉取完成"
 
 mkdir -p logs backups
@@ -40,7 +43,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/macro-dashboard
-ExecStart=/usr/bin/python3 server.py --with-api
+ExecStart=/opt/macro-dashboard/.venv/bin/python server.py --with-api
 Restart=on-failure
 RestartSec=30
 Environment="PYTHONUNBUFFERED=1"
@@ -67,7 +70,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/macro-dashboard
-ExecStart=/usr/bin/python3 -m streamlit run app.py --server.port 8501 --server.headless true
+ExecStart=/opt/macro-dashboard/.venv/bin/python -m streamlit run app.py --server.port 8501 --server.headless true
 Restart=on-failure
 Environment="PYTHONUNBUFFERED=1"
 EnvironmentFile=-/opt/macro-dashboard/.env

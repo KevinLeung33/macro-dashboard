@@ -144,6 +144,7 @@ FRED_SERIES = {
         "category": "commodities", "yaxis_label": "美元", "valid_range": (-10, 200), "is_pct": False,
     },
     "GOLDAMGBD228NLBR": {
+        "disabled": True,
         "display_name": "🥇 黄金(伦敦定盘)", "unit": "美元/盎司", "frequency": "daily",
         "category": "commodities", "yaxis_label": "美元", "is_pct": False,
     },
@@ -162,6 +163,7 @@ FRED_SERIES = {
         "category": "growth", "yaxis_label": "指数", "is_pct": False,
     },
     "NAPM": {
+        "disabled": True,
         "display_name": "🇺🇸 ISM制造业PMI", "unit": "", "frequency": "monthly",
         "category": "growth", "yaxis_label": "", "valid_range": (20, 80), "is_pct": False,
     },
@@ -227,7 +229,6 @@ YFINANCE_SYMBOLS = {
     "DX-Y.NYB": {"display_name": "💱 美元指数DXY", "category": "fx", "yaxis_label": "点"},
     "GC=F": {"display_name": "🥇 黄金期货", "category": "commodities", "yaxis_label": "美元/盎司"},
     "CL=F": {"display_name": "🛢️ WTI原油期货", "category": "commodities", "yaxis_label": "美元/桶"},
-    "BTC-USD": {"display_name": "₿ 比特币", "category": "crypto", "yaxis_label": "美元"},
     "MSTR": {"display_name": "🇺🇸 Strategy(MSTR)", "category": "crypto_equity", "yaxis_label": "美元"},
     "MU": {"display_name": "🇺🇸 美光科技", "category": "semiconductors", "yaxis_label": "美元"},
     "NVDA": {"display_name": "🇺🇸 英伟达", "category": "semiconductors", "yaxis_label": "美元"},
@@ -250,7 +251,7 @@ AKSHARE_SERIES = {
     },
     "CN_CAIXIN_PMI": {
         "display_name": "🇨🇳 中国财新制造业PMI", "unit": "", "category": "global_cycle",
-        "fetch_func": "macro_china_cx_pmi", "post_process": "pmi",
+        "fetch_func": "macro_china_cx_pmi_yearly", "post_process": "event_current",
     },
     "CN_LPR_1Y": {
         "display_name": "🇨🇳 中国LPR 1年期", "unit": "%", "category": "global_cycle",
@@ -270,7 +271,7 @@ AKSHARE_SERIES = {
     },
     "CN_M2_YOY": {
         "display_name": "🇨🇳 中国M2同比", "unit": "%", "category": "china_liquidity",
-        "fetch_func": "macro_china_m2", "post_process": "keyword_yoy",
+        "fetch_func": "macro_china_m2_yearly", "post_process": "event_current",
     },
     "CN_SOCIAL_FINANCING_STOCK_YOY": {
         "display_name": "🇨🇳 社融存量同比", "unit": "%", "category": "china_liquidity",
@@ -278,8 +279,8 @@ AKSHARE_SERIES = {
     },
     "CN_DR007": {
         "display_name": "🇨🇳 DR007", "unit": "%", "category": "china_liquidity",
-        "fetch_func": "rate_interbank", "post_process": "keyword_dr007",
-        "fetch_kwargs": {"market": "上海银行间同业拆放利率"},
+        "fetch_func": "repo_rate_hist", "post_process": "repo_fdr007",
+        "fetch_window_days": 365,
     },
 }
 

@@ -20,9 +20,9 @@ def _show(fig,note=""):
     st.plotly_chart(fig,use_container_width=True,config=cfg)
     if note: st.caption(note)
 
-btc=_q("fred","CBBTCUSD")
+btc, btc_meta = _market("BTC-USD")
 if not btc.empty:
-    st.subheader("BTC 价格 (Coinbase)")
+    st.subheader(f"BTC 价格 ({btc_meta.get('provider', 'unknown')})")
     tips=_q("fred","DFII10")
     dxy,dxy_meta=_market("DX-Y.NYB")
     tips_v=latest_value(tips)
@@ -40,7 +40,7 @@ if not btc.empty:
     _show(add_event_markers(btc_fig, btc_events),
           f"📖 BTC常受实际利率、美元流动性、ETF资金流和加密自身叙事共同影响。{macro_note}。" if macro_note else "📖 BTC常受实际利率、美元流动性、ETF资金流和加密自身叙事共同影响。")
 else:
-    st.warning("FRED BTC数据不可用 | CoinGecko/Yahoo在受限网络环境")
+    st.warning("BTC 价格数据不可用 | 请检查 Binance spot / FRED 接入")
 
 st.subheader("Crypto 内生流动性")
 stable_total = _q("crypto_liquidity", "STABLE_TOTAL_MCAP")

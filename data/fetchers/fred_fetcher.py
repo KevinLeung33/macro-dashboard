@@ -44,6 +44,9 @@ def fetch_and_store_fred(series_ids=None, incremental=True):
 
     for sid in series_ids:
         meta = FRED_SERIES.get(sid, {})
+        if meta.get("disabled"):
+            log_fetch("fred", sid, "skipped", error_message="series disabled: provider retired or unavailable")
+            continue
         try:
             records = _fetch_fred_observations(sid, incremental=incremental)
             if records:

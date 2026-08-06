@@ -33,13 +33,13 @@ def fetch_all(include_tic=True, include_crypto=True, include_global=True,
             fetch_and_store_yfinance_market(incremental=incremental)
         except Exception as e:
             print(f"  yfinance skipped: {e}")
-    if source_enabled("yfinance", include_crypto):
-        print("Fetching crypto (CoinGecko)...")
+    if source_enabled("binance_spot", include_crypto):
+        print("Fetching crypto spot (Binance)...")
         try:
-            from data.fetchers.yfinance_fetcher import fetch_and_store_crypto
-            fetch_and_store_crypto(incremental=incremental)
+            from data.fetchers.binance_spot_fetcher import fetch_and_store_binance_spot
+            fetch_and_store_binance_spot(incremental=incremental)
         except Exception as e:
-            print(f"  Crypto skipped: {e}")
+            print(f"  Binance spot skipped: {e}")
     if source_enabled("crypto_liquidity", include_crypto_liquidity):
         print("Fetching crypto liquidity (DefiLlama + CoinGecko fallback)...")
         try:

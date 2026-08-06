@@ -353,8 +353,8 @@ def fetch_and_store_crypto_liquidity(delay=2.0, incremental=True):
         except Exception as exc:
             print(f"  ETH/BTC: CoinGecko fallback needed - {exc}")
             try:
-                eth = _local_price_records("yfinance", "ETH-USD")
-                btc = _local_price_records("fred", "CBBTCUSD") or _local_price_records("yfinance", "BTC-USD")
+                eth = _local_price_records("binance_spot", "ETH-USD")
+                btc = _local_price_records("fred", "CBBTCUSD") or _local_price_records("binance_spot", "BTC-USD")
                 records = _ratio_records(eth, btc)
                 source_detail = "local price proxy"
             except Exception as fallback_exc:

@@ -84,9 +84,10 @@ python -c "from data.pipeline import fetch_all; fetch_all(incremental=True)"
 - `fred`：美国宏观、利率、信用、市场和 BTC Coinbase 数据。
 - `akshare`：中国宏观数据。
 - `tic`：美国财政部 TIC 美债持有数据。
-- `alpha_vantage`：MSTR/NVDA/MU 等美股备选源，需要 `ALPHA_VANTAGE_KEY`。
-- `stooq`：免 key 市场数据备选源。
-- `yfinance`：Yahoo Finance 备选源。
+- `alpha_vantage`：MSTR/NVDA/MU 等美股可选备选源；受免费额度限制，默认关闭。
+- `stooq`：免 key 市场数据可选备选源；部分环境会返回空数据，默认关闭。
+- `yfinance`：Yahoo Finance 市场数据源，负责股票、指数、外汇和商品。
+- `binance_spot`：Binance 公共 K 线接口，负责 BTC/ETH 日线现货价格。
 - `crypto_liquidity`：DefiLlama 稳定币数据，Kraken/Coinbase ETH/BTC。
 - `crypto_market`：Binance 公共接口的 BTC 资金费率和持仓量历史。
 - `crypto_flows`：可选配置的 BTC ETF flows 和交易所净流入 CSV/JSON 适配器。
@@ -122,7 +123,7 @@ ETF flows 和交易所净流入没有统一稳定的免费公共接口；未配�
 - FRED：从数据库最新日期附近开始请求，保留几天 overlap 以处理修订。
 - Stooq：已有历史时只请求最近窗口。
 - Alpha Vantage：已有历史时使用 compact 输出。
-- yfinance/CoinGecko：已有历史时只拉短窗口。
+- yfinance/Binance spot：已有历史时只拉短窗口。
 - AKShare：接口通常返回全量表，本地过滤新记录。
 - DefiLlama：接口通常返回全量历史，本地过滤新记录。
 
@@ -501,7 +502,7 @@ P1 新增数据源依赖外部接口，部署后先执行一次手动刷新，�
 
 - Yahoo Finance：确认 `USDCNH=X`、`USDCNY=X`、`000300.SS`、`399006.SZ`、`^HSTECH` 返回非空数据；部分符号不可用时应记录失败，不影响其他指标。
 - AKShare：确认 M2 同比、社融存量同比、DR007 的接口版本和字段名称匹配；AKShare 升级后优先查看抓取日志中的字段错误。
-- Binance：确认资金费率和 OI 接口可访问，核对 OI 返回值的单位，并留意公共接口的限频响应。
+- Binance：确认现货 K 线、资金费率和 OI 接口可访问，核对 OI 返回值的单位，并留意公共接口的限频响应。
 - ETF/交易所资金流：在 `.env` 配置 `BTC_ETF_FLOWS_URL`、`BTC_EXCHANGE_NETFLOW_URL` 后，确认返回 CSV/JSON 至少包含 `date` 和 `flow`、`net_flow`、`value` 或 `amount` 字段。
 - 空数据降级：移除可选资金流 URL 或模拟接口失败，确认页面仍可打开，并显示“未配置或暂无数据”。
 

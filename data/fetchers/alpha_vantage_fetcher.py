@@ -40,7 +40,10 @@ def fetch_and_store_alpha_vantage_market(delay=12.5, incremental=True):
     for logical_id, meta in ALPHA_VANTAGE_SYMBOLS.items():
         name = meta.get("display_name", logical_id)
         try:
-            outputsize = "compact" if incremental and observation_start("alpha_vantage", logical_id, overlap_days=5) else "full"
+            # The free TIME_SERIES_DAILY tier rejects outputsize=full.  A compact
+            # window is enough for incremental updates and avoids turning a
+            # fallback source into a recurring premium-feature error.
+            outputsize = "compact"
             resp = requests.get(
                 ALPHA_VANTAGE_URL,
                 params={

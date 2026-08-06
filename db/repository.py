@@ -25,6 +25,7 @@ def _default_source_url(source, series_id):
         "stooq": "https://stooq.com/",
         "alpha_vantage": "https://www.alphavantage.co/",
         "akshare": "https://akshare.akfamily.xyz/",
+        "binance_spot": "https://api.binance.com/api/v3/klines",
         "crypto_liquidity": "https://defillama.com/stablecoins",
     }
     return templates.get(source, "")
@@ -307,7 +308,16 @@ def query_source_health():
 
 def query_series_snapshot(source, series_id, lookback_points=5):
     """Latest value plus short-window change for one series."""
-    df = query_series(source, series_id)
+    actual_source = source
+    actual_series_id = series_id
+    if source == "market":
+        from services.market_data import query_market_series
+
+        df, meta = query_market_series(series_id)
+        actual_source = meta.get("provider") or source
+        actual_series_id = meta.get("series_id") or series_id
+    else:
+        df = query_series(source, series_id)
     if df.empty:
         return None
     df["date"] = pd.to_datetime(df["date"])
@@ -325,8 +335,8 @@ def query_series_snapshot(source, series_id, lookback_points=5):
         return (latest["value"] / prev["value"] - 1) * 100
 
     return {
-        "source": source,
-        "series_id": series_id,
+        "source": actual_source,
+        "series_id": actual_series_id,
         "date": latest["date"].strftime("%Y-%m-%d"),
         "value": float(latest["value"]),
         "change_1": None if prev_1 is None else float(latest["value"] - prev_1["value"]),

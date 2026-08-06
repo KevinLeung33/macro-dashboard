@@ -52,15 +52,17 @@ CRITICAL_SERIES = [
     ("akshare", "CN_M2_YOY"),
     ("akshare", "CN_SOCIAL_FINANCING_STOCK_YOY"),
     ("akshare", "CN_DR007"),
+    ("binance_spot", "BTC-USD"),
+    ("binance_spot", "ETH-USD"),
 ]
 
 MARKET_CANDIDATES = {
-    "DXY": [("stooq", "DX-Y.NYB"), ("yfinance", "DX-Y.NYB")],
-    "MSTR": [("alpha_vantage", "MSTR"), ("stooq", "MSTR"), ("yfinance", "MSTR")],
-    "SP500": [("fred", "SP500"), ("stooq", "^GSPC"), ("yfinance", "^GSPC")],
-    "NASDAQ": [("fred", "NASDAQCOM"), ("stooq", "^IXIC"), ("yfinance", "^IXIC")],
-    "BTC": [("fred", "CBBTCUSD"), ("yfinance", "BTC-USD")],
-    "Gold": [("fred", "GOLDAMGBD228NLBR"), ("stooq", "GC=F"), ("yfinance", "GC=F")],
+    "DXY": [("yfinance", "DX-Y.NYB"), ("fred", "DEXUSEU")],
+    "MSTR": [("yfinance", "MSTR"), ("alpha_vantage", "MSTR")],
+    "SP500": [("fred", "SP500"), ("yfinance", "^GSPC")],
+    "NASDAQ": [("fred", "NASDAQCOM"), ("yfinance", "^IXIC")],
+    "BTC": [("fred", "CBBTCUSD"), ("binance_spot", "BTC-USD")],
+    "Gold": [("yfinance", "GC=F")],
 }
 
 

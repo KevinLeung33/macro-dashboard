@@ -1,6 +1,6 @@
 import time
 import logging
-import requests
+import pandas as pd
 
 from config.series_definitions import YFINANCE_SYMBOLS
 from data.incremental import filter_new_records, observation_start
@@ -8,56 +8,13 @@ from db.repository import (
     upsert_time_series, upsert_series_meta, log_fetch,
 )
 
-COINGECKO_URL = "https://api.coingecko.com/api/v3"
-HEADERS = {"User-Agent": "Mozilla/5.0"}
 logger = logging.getLogger(__name__)
 
-COINS = {
-    "BTC-USD": {"id": "bitcoin", "display_name": "比特币", "category": "crypto"},
-    "ETH-USD": {"id": "ethereum", "display_name": "以太坊", "category": "crypto"},
-}
-
-
 def fetch_and_store_crypto(delay=2.0, incremental=True):
-    for sym, info in COINS.items():
-        try:
-            url = f"{COINGECKO_URL}/coins/{info['id']}/market_chart"
-            days = "30" if incremental and observation_start("yfinance", sym, overlap_days=3) else "1825"
-            params = {"vs_currency": "usd", "days": days}
-            resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
-            if resp.status_code == 429:
-                print(f"  {info['display_name']}: rate limited, retrying in 60s...")
-                time.sleep(60)
-                resp = requests.get(url, params=params, headers=HEADERS, timeout=30)
+    """Backward-compatible entry point; crypto spot now uses Binance."""
+    from data.fetchers.binance_spot_fetcher import fetch_and_store_binance_spot
 
-            resp.raise_for_status()
-            data = resp.json()
-            prices = data.get("prices", [])
-
-            from datetime import datetime
-            records = [
-                {"date": datetime.utcfromtimestamp(p[0] / 1000).strftime("%Y-%m-%d"),
-                 "value": float(p[1])}
-                for p in prices
-            ]
-            records = filter_new_records("yfinance", sym, records, overlap_days=3) if incremental else records
-
-            upsert_time_series("yfinance", sym, records)
-            upsert_series_meta("yfinance", sym, {
-                "display_name": info["display_name"],
-                "unit": "USD",
-                "frequency": "daily",
-                "category": info["category"],
-                "yaxis_label": "美元",
-            })
-            log_fetch("yfinance", sym, "success", len(records))
-            print(f"  {info['display_name']}: {len(records)} records")
-
-            if sym != list(COINS.keys())[-1]:
-                time.sleep(delay)
-        except Exception as e:
-            log_fetch("yfinance", sym, "error", error_message=str(e))
-            print(f"  {info['display_name']}: FAILED - {e}")
+    return fetch_and_store_binance_spot(incremental=incremental)
 
 
 def fetch_and_store_yfinance_market(period="5y", delay=1.0, incremental=True):
@@ -80,11 +37,19 @@ def fetch_and_store_yfinance_market(period="5y", delay=1.0, incremental=True):
                 failed += 1
                 continue
 
-            close = hist["Close"].dropna()
-            records = [
-                {"date": idx.strftime("%Y-%m-%d"), "value": float(val)}
-                for idx, val in close.items()
-            ]
+            close = hist["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            close = close.dropna()
+            records = []
+            for idx, val in close.items():
+                parsed_date = pd.to_datetime(idx, errors="coerce")
+                if pd.isna(parsed_date):
+                    continue
+                records.append({
+                    "date": parsed_date.strftime("%Y-%m-%d"),
+                    "value": float(val),
+                })
             records = filter_new_records("yfinance", sym, records, overlap_days=5) if incremental else records
             if not records:
                 log_fetch("yfinance", sym, "error", error_message="No close data")

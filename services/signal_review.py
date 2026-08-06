@@ -13,11 +13,11 @@ from services.time_utils import app_now
 
 ASSET_SERIES = {
     "BTC": ("fred", "CBBTCUSD"),
-    "ETH": ("yfinance", "ETH-USD"),
+    "ETH": ("binance_spot", "ETH-USD"),
     "NASDAQ": ("fred", "NASDAQCOM"),
     "SP500": ("fred", "SP500"),
     "DXY": ("market", "DX-Y.NYB"),
-    "Gold": ("fred", "GOLDAMGBD228NLBR"),
+    "Gold": ("market", "GC=F"),
     "Oil": ("fred", "DCOILWTICO"),
     "MSTR": ("market", "MSTR"),
 }

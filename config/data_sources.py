@@ -27,19 +27,19 @@ DATA_SOURCES = {
     },
     "alpha_vantage": {
         "label": "Alpha Vantage",
-        "enabled": True,
+        "enabled": False,
         "priority": 40,
         "refresh": "daily",
         "incremental": True,
-        "description": "Equity fallback for MSTR/NVDA/MU when API key is configured.",
+        "description": "Optional equity fallback; disabled by default because free-tier limits are unsuitable for scheduled refreshes.",
     },
     "stooq": {
         "label": "Stooq",
-        "enabled": True,
+        "enabled": False,
         "priority": 50,
         "refresh": "daily",
         "incremental": True,
-        "description": "No-key market fallback. Some environments may receive anti-bot HTML.",
+        "description": "Optional no-key market fallback; disabled by default when the endpoint returns empty/anti-bot responses.",
     },
     "yfinance": {
         "label": "yfinance",
@@ -48,6 +48,14 @@ DATA_SOURCES = {
         "refresh": "daily",
         "incremental": True,
         "description": "Market fallback through Yahoo Finance.",
+    },
+    "binance_spot": {
+        "label": "Binance spot",
+        "enabled": True,
+        "priority": 65,
+        "refresh": "daily",
+        "incremental": True,
+        "description": "BTC/ETH daily spot candles from Binance public klines.",
     },
     "crypto_liquidity": {
         "label": "Crypto liquidity",
@@ -89,9 +97,11 @@ def source_config(source):
 
 
 def source_enabled(source, override=None):
+    if not bool(source_config(source).get("enabled", True)):
+        return False
     if override is not None:
         return bool(override)
-    return bool(source_config(source).get("enabled", True))
+    return True
 
 
 def source_summary_rows():

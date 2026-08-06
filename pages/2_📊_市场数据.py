@@ -60,7 +60,7 @@ with tab2:
     if not eu.empty and not jp.empty:
         _show(add_range_selector(dual_axis_chart({"USD/EUR":eu,"JPY/USD":jp},"汇率(双轴)","USD/EUR","JPY/USD")),
               "📖 两个轴刻度不同。USD/EUR↑=美元兑欧元走强。FRED的JPY/USD表示1美元兑多少日元，数值↑=日元贬值。美元走强通常会收紧全球美元流动性。")
-    oil=_q("fred","DCOILWTICO"); gold=_q("fred","GOLDAMGBD228NLBR")
+    oil=_q("fred","DCOILWTICO"); gold, gold_meta=_market("GC=F")
     if not oil.empty:
         dfs_c={"WTI原油":oil}
         if not gold.empty: dfs_c["黄金"]=gold

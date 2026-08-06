@@ -3,6 +3,8 @@
 使用 AKShare（仅宏观函数，不依赖 py_mini_racer）
 """
 import time
+from datetime import date, timedelta
+
 import pandas as pd
 
 from config.series_definitions import AKSHARE_SERIES
@@ -86,6 +88,20 @@ def _post_process(df, pp):
         records = rows_from_column(keyword_column(["存量同比", "存量", "同比"]))
     elif pp == "keyword_dr007":
         records = rows_from_column(keyword_column(["dr007", "7天", "利率"]))
+    elif pp == "event_current":
+        date_col = keyword_column(["日期", "时间"], fallback=1)
+        value_col = keyword_column(["今值", "现值"], fallback=2)
+        for _, row in df.iterrows():
+            value = _try_float(row[value_col])
+            if value is not None:
+                records.append({"date": _date_str(row[date_col]), "value": value})
+    elif pp == "repo_fdr007":
+        date_col = keyword_column(["date", "日期"], fallback=0)
+        value_col = keyword_column(["fdr007"], fallback=1)
+        for _, row in df.iterrows():
+            value = _try_float(row[value_col])
+            if value is not None:
+                records.append({"date": _date_str(row[date_col]), "value": value})
     else:
         for _, row in df.iterrows():
             v = _try_float(row[df.columns[1]]) if len(df.columns) > 1 else None
@@ -118,7 +134,15 @@ def fetch_global_data(delay=2.0, incremental=True):
                 print(f"  [{i+1}/{len(symbols)}] {name}: FUNC NOT FOUND")
                 continue
 
-            df = func(**meta.get("fetch_kwargs", {}))
+            fetch_kwargs = dict(meta.get("fetch_kwargs", {}))
+            if pp == "repo_fdr007":
+                window_days = int(meta.get("fetch_window_days", 365))
+                end_date = date.today()
+                fetch_kwargs.update({
+                    "start_date": (end_date - timedelta(days=window_days)).strftime("%Y%m%d"),
+                    "end_date": end_date.strftime("%Y%m%d"),
+                })
+            df = func(**fetch_kwargs)
             if df is None or df.empty:
                 log_fetch("akshare", sid, "error", error_message="Empty")
                 print(f"  [{i+1}/{len(symbols)}] {name}: EMPTY")

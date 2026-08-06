@@ -13,9 +13,9 @@ from services.market_data import query_market_series
 
 
 ASSET_SERIES = {
-    "BTC": ("fred", "CBBTCUSD"), "ETH": ("yfinance", "ETH-USD"),
+    "BTC": ("fred", "CBBTCUSD"), "ETH": ("binance_spot", "ETH-USD"),
     "NASDAQ": ("fred", "NASDAQCOM"), "SP500": ("fred", "SP500"),
-    "DXY": ("market", "DX-Y.NYB"), "Gold": ("fred", "GOLDAMGBD228NLBR"),
+    "DXY": ("market", "DX-Y.NYB"), "Gold": ("market", "GC=F"),
     "Oil": ("fred", "DCOILWTICO"), "MSTR": ("market", "MSTR"),
 }
 HORIZONS = {"return_1d": 1, "return_3d": 3, "return_7d": 7, "return_30d": 30}
