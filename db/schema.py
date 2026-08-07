@@ -380,6 +380,131 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_news_hash ON news_articles(hash);
             CREATE INDEX IF NOT EXISTS idx_ai_article ON ai_analyses(article_id);
 
+            -- RSS 状态：记录最近一次成功抓取，便于区分“没有新文章”和“源站失败”。
+            CREATE TABLE IF NOT EXISTS news_feed_state (
+                source TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                etag TEXT DEFAULT '',
+                last_modified TEXT DEFAULT '',
+                last_success_at TIMESTAMP,
+                last_error TEXT DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_news_feed_state_success
+                ON news_feed_state(last_success_at);
+
+            -- 真实交易只读记录。这里不保存 API secret，也不提供下单接口。
+            CREATE TABLE IF NOT EXISTS trade_account_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue TEXT NOT NULL,
+                account_label TEXT DEFAULT '',
+                observed_at TEXT NOT NULL,
+                equity REAL,
+                available_balance REAL,
+                unrealized_pnl REAL,
+                margin_ratio REAL,
+                raw_json TEXT DEFAULT '',
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_account_snapshots_latest
+                ON trade_account_snapshots(venue, account_label, observed_at DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue TEXT NOT NULL,
+                account_label TEXT DEFAULT '',
+                order_id TEXT NOT NULL,
+                client_order_id TEXT DEFAULT '',
+                symbol TEXT NOT NULL,
+                instrument_type TEXT DEFAULT 'perpetual',
+                side TEXT NOT NULL,
+                position_side TEXT DEFAULT '',
+                order_type TEXT DEFAULT '',
+                status TEXT DEFAULT '',
+                price REAL,
+                avg_price REAL,
+                quantity REAL,
+                filled_quantity REAL DEFAULT 0,
+                fee REAL DEFAULT 0,
+                fee_asset TEXT DEFAULT '',
+                realized_pnl REAL,
+                leverage REAL,
+                reduce_only INTEGER DEFAULT 0,
+                placed_at TEXT,
+                updated_at TEXT,
+                raw_json TEXT DEFAULT '',
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(venue, account_label, order_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_orders_symbol_time
+                ON trade_orders(symbol, placed_at DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_fills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue TEXT NOT NULL,
+                account_label TEXT DEFAULT '',
+                fill_id TEXT NOT NULL,
+                order_id TEXT DEFAULT '',
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                price REAL,
+                quantity REAL,
+                fee REAL DEFAULT 0,
+                fee_asset TEXT DEFAULT '',
+                realized_pnl REAL,
+                executed_at TEXT,
+                raw_json TEXT DEFAULT '',
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(venue, account_label, fill_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_fills_symbol_time
+                ON trade_fills(symbol, executed_at DESC);
+
+            -- 下单前仅记录交易理由；AI 不在下单前阻止或质疑交易。
+            CREATE TABLE IF NOT EXISTS trade_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue TEXT DEFAULT '',
+                symbol TEXT NOT NULL,
+                order_id TEXT DEFAULT '',
+                side TEXT DEFAULT '',
+                thesis TEXT DEFAULT '',
+                setup TEXT DEFAULT '',
+                stop_price REAL,
+                target_price REAL,
+                expected_horizon TEXT DEFAULT '',
+                risk_note TEXT DEFAULT '',
+                market_snapshot_json TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_notes_recent
+                ON trade_notes(symbol, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_ai_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER,
+                order_id TEXT DEFAULT '',
+                model TEXT DEFAULT '',
+                prompt_version TEXT DEFAULT '',
+                status TEXT DEFAULT 'completed',
+                review_json TEXT NOT NULL DEFAULT '{}',
+                summary_cn TEXT DEFAULT '',
+                strengths TEXT DEFAULT '',
+                weaknesses TEXT DEFAULT '',
+                risk_flags TEXT DEFAULT '',
+                execution_review TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (note_id) REFERENCES trade_notes(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_ai_reviews_note
+                ON trade_ai_reviews(note_id, created_at DESC);
+
             CREATE TABLE IF NOT EXISTS news_cluster_indicator_links (
                 cluster_id INTEGER NOT NULL,
                 source TEXT NOT NULL,

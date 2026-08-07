@@ -52,8 +52,9 @@ def require_api_token(authorization: Optional[str] = None):
 
 def main():
     from data.pipeline import fetch_all
+    from db.schema import init_db
     from services.scheduler import MacroScheduler
-    from services.news_fetcher import fetch_all_news
+    from services.news_fetcher import fetch_all_news, fetch_rss
     from services.report_builder import build_report
     from services.notifier import notify
     from services.daily_context import get_data_health, save_daily_context
@@ -67,6 +68,9 @@ def main():
         parse_notify_channels,
         run_with_retry,
     )
+
+    # 先完成新表/旧库迁移，再启动 RSS 快速任务。
+    init_db()
 
     alpha_vantage_key = os.getenv("ALPHA_VANTAGE_KEY", "").strip()
     channels = parse_notify_channels()
@@ -92,6 +96,7 @@ def main():
     scheduler = MacroScheduler(
         data_pipeline=lambda: fetch_all(include_global=True),
         news_fetcher=news_pipeline,
+        fast_news_fetcher=fetch_rss,
         report_builder=build_scheduled_report,
         notifier=lambda msg: notify(msg, channels),
     )

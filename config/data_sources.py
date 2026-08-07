@@ -87,7 +87,7 @@ DATA_SOURCES = {
         "priority": 80,
         "refresh": "hourly",
         "incremental": True,
-        "description": "RSS and optional Alpha Vantage news, followed by AI analysis and clustering.",
+        "description": "Official/media RSS (including BLS, SEC, EIA and Wu Blockchain) plus optional Alpha Vantage; RSS is refreshed faster and AI analysis runs separately.",
     },
 }
 

@@ -6,7 +6,7 @@ import pandas as pd
 
 from db.repository import (
     query_analyzed_news, query_cluster_articles, query_cluster_research_links,
-    query_news_clusters, query_news_processing_summary, retry_failed_articles,
+    query_news_clusters, query_news_feed_states, query_news_processing_summary, retry_failed_articles,
 )
 from db.schema import get_db
 from services.ai_review import ai_review_statistics, refresh_ai_analysis_reviews
@@ -295,3 +295,12 @@ with st.sidebar:
     st.metric("已分析", analyzed)
     st.metric("今日新文章", today_n)
     st.metric("今日分析", today_a)
+    feed_states = query_news_feed_states()
+    with st.expander("RSS 源状态", expanded=False):
+        if not feed_states:
+            st.caption("尚未抓取 RSS。")
+        for feed in feed_states:
+            icon = "✅" if not feed["last_error"] else "⚠️"
+            st.caption(f"{icon} {feed['source']} · {feed['last_success_at'] or '未成功'}")
+            if feed["last_error"]:
+                st.caption(f"　{feed['last_error'][:160]}")

@@ -16,11 +16,12 @@ logger = logging.getLogger("scheduler")
 
 
 class MacroScheduler:
-    def __init__(self, data_pipeline, news_fetcher, report_builder, notifier):
+    def __init__(self, data_pipeline, news_fetcher, report_builder, notifier, fast_news_fetcher=None):
         self.timezone = app_timezone()
         self.scheduler = BackgroundScheduler(timezone=self.timezone)
         self.data_pipeline = data_pipeline
         self.news_fetcher = news_fetcher
+        self.fast_news_fetcher = fast_news_fetcher
         self.report_builder = report_builder
         self.notifier = notifier
 
@@ -45,6 +46,18 @@ class MacroScheduler:
             logger.warning("Scheduled news fetch skipped: another news refresh is running")
         except Exception as e:
             logger.error(f"News fetch failed: {e}")
+
+    def _fetch_fast_news(self):
+        """只抓 RSS 原文，不触发 AI；用于较低延迟地更新新闻雷达。"""
+        logger.info("Scheduled: fast RSS refresh at %s...", self._now())
+        try:
+            with hold_task("news_fast_refresh"):
+                count = run_with_retry("news_fast_refresh", self.fast_news_fetcher)
+            logger.info("Fast RSS fetch: %s articles", count)
+        except TaskBusyError:
+            logger.warning("Fast RSS fetch skipped: another fast RSS refresh is running")
+        except Exception as e:
+            logger.error("Fast RSS fetch failed: %s", e)
 
     def _daily_report(self):
         logger.info("Scheduled: generating daily report at %s...", self._now())
@@ -78,6 +91,18 @@ class MacroScheduler:
         self.scheduler.add_job(self._fetch_data, CronTrigger(hour="*/6"))
         # News: every hour
         self.scheduler.add_job(self._fetch_news, CronTrigger(minute=0))
+        # RSS: every 15 minutes by default; this job only入库，不调用 AI。
+        if self.fast_news_fetcher:
+            try:
+                fast_minutes = max(5, int(os.getenv("NEWS_FAST_REFRESH_MINUTES", "15")))
+            except ValueError:
+                fast_minutes = 15
+            self.scheduler.add_job(
+                self._fetch_fast_news,
+                CronTrigger(minute=f"*/{fast_minutes}"),
+                id="news_fast_refresh",
+                replace_existing=True,
+            )
         # Daily report: 8:00 AM
         self.scheduler.add_job(self._daily_report, CronTrigger(hour=8, minute=0))
         # Weekly report: Monday 9:00 AM
@@ -85,9 +110,10 @@ class MacroScheduler:
         self.scheduler.start()
         logger.info(
             "Scheduler started with timezone=%s current_time=%s; jobs: "
-            "data/6h, news/1h, daily/8am, weekly/Mon9am",
+            "data/6h, RSS/%sm, news/1h, daily/8am, weekly/Mon9am",
             timezone_name(),
             self._now(),
+            os.getenv("NEWS_FAST_REFRESH_MINUTES", "15") if self.fast_news_fetcher else "off",
         )
 
     def _recover_missed_tasks(self):

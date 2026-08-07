@@ -682,16 +682,53 @@ def insert_news_article(source, source_type, url, title, summary="", content="",
     h = hashlib.md5((url or title).encode()).hexdigest()[:16]
     with get_db() as conn:
         try:
-            conn.execute(
+            cur = conn.execute(
                 """INSERT OR IGNORE INTO news_articles
                    (source, source_type, url, title, summary, content, published_at, topic, hash)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (source, source_type, url, title, summary, content, published_at, topic, h),
             )
-            return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            # INSERT OR IGNORE 时 last_insert_rowid() 可能返回上一条文章的 ID，
+            # 会让调用方误以为重复文章是新文章。只有真正插入才返回 ID。
+            return cur.lastrowid if cur.rowcount else None
         except Exception:
             logger.exception("Failed to insert news article from source=%s", source)
             return None
+
+
+def get_news_feed_state(source):
+    """读取 RSS 的 ETag/Last-Modified 与最近错误状态。"""
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT source, url, etag, last_modified, last_success_at, last_error, updated_at
+               FROM news_feed_state WHERE source = ?""",
+            (source,),
+        ).fetchone()
+
+
+def update_news_feed_state(source, url, etag="", last_modified="", last_success_at=None, last_error=""):
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO news_feed_state
+               (source, url, etag, last_modified, last_success_at, last_error, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(source) DO UPDATE SET
+                 url = excluded.url,
+                 etag = excluded.etag,
+                 last_modified = excluded.last_modified,
+                 last_success_at = COALESCE(excluded.last_success_at, news_feed_state.last_success_at),
+                 last_error = excluded.last_error,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (source, url, etag or "", last_modified or "", last_success_at, last_error or ""),
+        )
+
+
+def query_news_feed_states():
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT source, url, last_success_at, last_error, updated_at
+               FROM news_feed_state ORDER BY source"""
+        ).fetchall()
 
 
 def get_unanalyzed_articles(limit=20):
@@ -1315,3 +1352,168 @@ def get_recent_fingerprints(days=7):
             (f"-{days} days",),
         ).fetchall()
     return set(f"{r['event_type']}|{r['assets_impacted']}|{r['direction']}" for r in rows)
+
+
+# ====== Read-only crypto trade journal ======
+
+def _json_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def upsert_trade_order(order):
+    """保存交易所同步到的订单；仅用于只读同步，不触发任何下单动作。"""
+    values = (
+        order.get("venue", ""), order.get("account_label", ""), str(order.get("order_id", "")),
+        order.get("client_order_id", ""), order.get("symbol", ""), order.get("instrument_type", "perpetual"),
+        order.get("side", ""), order.get("position_side", ""), order.get("order_type", ""),
+        order.get("status", ""), order.get("price"), order.get("avg_price"), order.get("quantity"),
+        order.get("filled_quantity", 0), order.get("fee", 0), order.get("fee_asset", ""),
+        order.get("realized_pnl"), order.get("leverage"), int(bool(order.get("reduce_only", False))),
+        order.get("placed_at", ""), order.get("updated_at", ""), _json_text(order.get("raw_json", {})),
+    )
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO trade_orders
+               (venue, account_label, order_id, client_order_id, symbol, instrument_type,
+                side, position_side, order_type, status, price, avg_price, quantity,
+                filled_quantity, fee, fee_asset, realized_pnl, leverage, reduce_only,
+                placed_at, updated_at, raw_json, synced_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(venue, account_label, order_id) DO UPDATE SET
+                 client_order_id=excluded.client_order_id,
+                 symbol=excluded.symbol, instrument_type=excluded.instrument_type,
+                 side=excluded.side, position_side=excluded.position_side,
+                 order_type=excluded.order_type, status=excluded.status,
+                 price=excluded.price, avg_price=excluded.avg_price, quantity=excluded.quantity,
+                 filled_quantity=excluded.filled_quantity, fee=excluded.fee,
+                 fee_asset=excluded.fee_asset, realized_pnl=excluded.realized_pnl,
+                 leverage=excluded.leverage, reduce_only=excluded.reduce_only,
+                 placed_at=excluded.placed_at, updated_at=excluded.updated_at,
+                 raw_json=excluded.raw_json, synced_at=CURRENT_TIMESTAMP""",
+            values,
+        )
+        return cur.lastrowid
+
+
+def upsert_trade_fill(fill):
+    values = (
+        fill.get("venue", ""), fill.get("account_label", ""), str(fill.get("fill_id", "")),
+        str(fill.get("order_id", "")), fill.get("symbol", ""), fill.get("side", ""),
+        fill.get("price"), fill.get("quantity"), fill.get("fee", 0), fill.get("fee_asset", ""),
+        fill.get("realized_pnl"), fill.get("executed_at", ""), _json_text(fill.get("raw_json", {})),
+    )
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO trade_fills
+               (venue, account_label, fill_id, order_id, symbol, side, price, quantity,
+                fee, fee_asset, realized_pnl, executed_at, raw_json, synced_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(venue, account_label, fill_id) DO UPDATE SET
+                 order_id=excluded.order_id, symbol=excluded.symbol, side=excluded.side,
+                 price=excluded.price, quantity=excluded.quantity, fee=excluded.fee,
+                 fee_asset=excluded.fee_asset, realized_pnl=excluded.realized_pnl,
+                 executed_at=excluded.executed_at, raw_json=excluded.raw_json,
+                 synced_at=CURRENT_TIMESTAMP""",
+            values,
+        )
+        return cur.lastrowid
+
+
+def insert_trade_note(venue, symbol, order_id="", side="", thesis="", setup="",
+                      stop_price=None, target_price=None, expected_horizon="", risk_note="",
+                      market_snapshot=None):
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO trade_notes
+               (venue, symbol, order_id, side, thesis, setup, stop_price, target_price,
+                expected_horizon, risk_note, market_snapshot_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (venue, symbol, order_id, side, thesis, setup, stop_price, target_price,
+             expected_horizon, risk_note, _json_text(market_snapshot or {})),
+        )
+        return cur.lastrowid
+
+
+def get_trade_note(note_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM trade_notes WHERE id = ?", (note_id,)
+        ).fetchone()
+
+
+def query_trade_notes(limit=100, symbol=None):
+    with get_db() as conn:
+        if symbol:
+            return conn.execute(
+                """SELECT * FROM trade_notes WHERE symbol = ?
+                   ORDER BY created_at DESC, id DESC LIMIT ?""",
+                (symbol, limit),
+            ).fetchall()
+        return conn.execute(
+            "SELECT * FROM trade_notes ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
+def upsert_trade_account_snapshot(venue, account_label="", observed_at="", equity=None,
+                                  available_balance=None, unrealized_pnl=None,
+                                  margin_ratio=None, raw_json=None):
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO trade_account_snapshots
+               (venue, account_label, observed_at, equity, available_balance,
+                unrealized_pnl, margin_ratio, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (venue, account_label, observed_at, equity, available_balance, unrealized_pnl,
+             margin_ratio, _json_text(raw_json or {})),
+        )
+        return cur.lastrowid
+
+
+def query_latest_trade_account_snapshot(venue=None, account_label=""):
+    with get_db() as conn:
+        if venue:
+            return conn.execute(
+                """SELECT * FROM trade_account_snapshots
+                   WHERE venue = ? AND account_label = ?
+                   ORDER BY observed_at DESC, id DESC LIMIT 1""",
+                (venue, account_label),
+            ).fetchone()
+        return conn.execute(
+            """SELECT * FROM trade_account_snapshots
+               ORDER BY observed_at DESC, id DESC LIMIT 1"""
+        ).fetchone()
+
+
+def insert_trade_ai_review(note_id, order_id, model, prompt_version, status, review,
+                           summary_cn="", strengths=None, weaknesses=None, risk_flags=None,
+                           execution_review=""):
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO trade_ai_reviews
+               (note_id, order_id, model, prompt_version, status, review_json, summary_cn,
+                strengths, weaknesses, risk_flags, execution_review)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (note_id, order_id or "", model or "", prompt_version or "", status or "completed",
+             _json_text(review or {}), summary_cn or "", _json_text(strengths or []),
+             _json_text(weaknesses or []), _json_text(risk_flags or []), execution_review or ""),
+        )
+        return cur.lastrowid
+
+
+def query_trade_ai_reviews(note_id=None, limit=100):
+    with get_db() as conn:
+        if note_id:
+            return conn.execute(
+                """SELECT * FROM trade_ai_reviews WHERE note_id = ?
+                   ORDER BY created_at DESC, id DESC LIMIT ?""",
+                (note_id, limit),
+            ).fetchall()
+        return conn.execute(
+            "SELECT * FROM trade_ai_reviews ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()

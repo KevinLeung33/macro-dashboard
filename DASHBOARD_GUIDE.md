@@ -74,6 +74,7 @@ python -c "from data.pipeline import fetch_all; fetch_all(incremental=True)"
 - 每日沉淀：保存每日研究包和 AI 趋势日报。
 - 研究假设：维护你的长期假设、观点日志和观察项。
 - 信号复盘：保存组合信号，跟踪资产后续表现，并统计信号有效性。
+- 交易复盘：只读交易接入的准备层；先手工记录 Crypto 交易理由，再主动调用 AI 做事后点评。
 
 ## 3. 数据源
 
@@ -91,7 +92,7 @@ python -c "from data.pipeline import fetch_all; fetch_all(incremental=True)"
 - `crypto_liquidity`：DefiLlama 稳定币数据，Kraken/Coinbase ETH/BTC。
 - `crypto_market`：Binance 公共接口的 BTC 资金费率和持仓量历史。
 - `crypto_flows`：可选配置的 BTC ETF flows 和交易所净流入 CSV/JSON 适配器。
-- `news`：RSS 和可选 Alpha Vantage 新闻源。
+- `news`：官方/媒体 RSS（含 BLS、SEC、EIA、吴说）和可选 Alpha Vantage 新闻源；RSS 原文快速刷新，AI 分析单独低频运行。
 
 Crypto 内生流动性目前包括：
 
