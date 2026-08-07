@@ -1,17 +1,23 @@
 """Crypto 真实交易日志与事后 AI 点评。"""
 import json
+import os
 
 import pandas as pd
 import streamlit as st
 
 from db.repository import (
     insert_trade_note,
+    query_latest_trade_account_snapshot,
     query_trade_ai_reviews,
+    query_trade_fills,
     query_trade_notes,
+    query_trade_orders,
+    query_trade_positions,
 )
 from db.schema import init_db
 from services.access_control import render_admin_access, require_admin
 from services.trade_review import review_trade_note
+from services.okx_readonly import OKXReadOnlyClient, sync_okx_readonly_account
 
 
 st.set_page_config(page_title="交易复盘", page_icon="🧾", layout="wide")
@@ -22,8 +28,143 @@ init_db()
 
 st.info(
     "下单前只填写自己的交易理由、止损和目标；AI 只在你主动点击“生成 AI 点评”后运行，"
-    "不参与下单前的批准或质疑。交易所只读 API 与 K 线/账户同步将在后续接入。"
+    "不参与下单前的批准或质疑。OKX 账户同步只读，不提供下单接口。"
 )
+
+
+def _row_dicts(rows):
+    return [dict(row) for row in rows]
+
+
+st.subheader("OKX 只读账户与市场")
+okx_client = OKXReadOnlyClient()
+st.caption("只读取跨币种保证金账户、持仓、挂单/历史订单、成交和公开 K 线；API Key 必须只有 Read 权限。")
+sync_col, mode_col = st.columns([1, 3])
+with sync_col:
+    sync_clicked = st.button("🔄 同步 OKX 账户", disabled=not admin_access, type="primary")
+if sync_clicked and require_admin("同步 OKX 账户"):
+    with st.spinner("读取 OKX 账户、持仓、订单和成交……"):
+        try:
+            st.session_state["okx_sync_result"] = sync_okx_readonly_account(okx_client)
+            st.success("OKX 只读数据已同步。")
+        except Exception as exc:
+            st.error(f"OKX 同步失败：{exc}")
+
+if not okx_client.configured:
+    st.warning("尚未配置 OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE；可以先使用本页的交易记录功能。")
+
+account_label = os.getenv("OKX_ACCOUNT_LABEL", "main").strip() or "main"
+snapshot = query_latest_trade_account_snapshot("OKX", account_label)
+positions = query_trade_positions("OKX", account_label, limit=100)
+orders = query_trade_orders("OKX", account_label, limit=100)
+fills = query_trade_fills("OKX", account_label, limit=200)
+sync_result = st.session_state.get("okx_sync_result") or {}
+with mode_col:
+    if snapshot:
+        mode_text = snapshot["account_mode"] or "未记录"
+        margin_text = snapshot["margin_mode"] or "cross"
+        st.caption(f"账户模式：{mode_text} · 保证金模式：{margin_text} · 最近同步：{snapshot['synced_at']}")
+    else:
+        st.caption("尚未有 OKX 同步快照。")
+
+if snapshot:
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("调整后权益", f"{snapshot['equity'] or 0:,.4f}")
+    metric_cols[1].metric("可用保证金", f"{snapshot['available_balance'] or 0:,.4f}")
+    metric_cols[2].metric("未实现盈亏", f"{snapshot['unrealized_pnl'] or 0:,.4f}")
+    metric_cols[3].metric("保证金率", f"{snapshot['margin_ratio'] or 0:,.4f}")
+    try:
+        balance_payload = json.loads(snapshot["raw_json"] or "{}")
+        balance_details = (balance_payload.get("balance") or {}).get("details") or []
+    except (TypeError, ValueError):
+        balance_details = []
+    if balance_details:
+        st.markdown("**跨币种余额明细**")
+        balance_df = pd.DataFrame(balance_details)
+        balance_columns = ["ccy", "cashBal", "eq", "availEq", "availBal", "usdVal", "upl"]
+        st.dataframe(
+            balance_df[[column for column in balance_columns if column in balance_df.columns]],
+            use_container_width=True,
+            hide_index=True,
+        )
+    if sync_result.get("warnings"):
+        for warning in sync_result["warnings"]:
+            st.warning(warning)
+
+if positions:
+    st.markdown("**当前持仓**")
+    position_df = pd.DataFrame(_row_dicts(positions))
+    visible = [
+        "symbol", "position_side", "margin_mode", "quantity", "entry_price", "mark_price",
+        "liquidation_price", "leverage", "unrealized_pnl", "unrealized_pnl_ratio", "updated_at",
+    ]
+    st.dataframe(position_df[[column for column in visible if column in position_df.columns]], use_container_width=True, hide_index=True)
+else:
+    st.caption("当前没有已同步的非零持仓。")
+
+symbol_options = sorted({
+    str(row["symbol"])
+    for row in list(positions) + list(orders) + list(fills)
+    if row["symbol"]
+})
+if symbol_options:
+    chart_left, chart_mid, chart_right = st.columns([2, 1, 1])
+    with chart_left:
+        chart_symbol = st.selectbox("K 线交易对", symbol_options, key="okx_chart_symbol")
+    with chart_mid:
+        chart_bar = st.selectbox("周期", ["15m", "1H", "4H", "1D"], index=1, key="okx_chart_bar")
+    with chart_right:
+        chart_refresh = st.button("刷新 K 线", disabled=not admin_access)
+    if chart_refresh:
+        try:
+            candles = okx_client.fetch_candles(chart_symbol, bar=chart_bar, limit=200)
+            if not candles:
+                st.warning("OKX 没有返回 K 线。")
+            else:
+                import plotly.graph_objects as go
+
+                candle_df = pd.DataFrame(candles)
+                candle_df["timestamp"] = pd.to_datetime(candle_df["timestamp"], utc=True)
+                fig = go.Figure(data=[go.Candlestick(
+                    x=candle_df["timestamp"], open=candle_df["open"], high=candle_df["high"],
+                    low=candle_df["low"], close=candle_df["close"], name=chart_symbol,
+                )])
+                chart_fills = [dict(row) for row in fills if row["symbol"] == chart_symbol]
+                if chart_fills:
+                    marker_df = pd.DataFrame(chart_fills)
+                    marker_df["executed_at"] = pd.to_datetime(marker_df["executed_at"], utc=True)
+                    for fill_side, color, marker in (("buy", "#00a67d", "triangle-up"), ("sell", "#e74c3c", "triangle-down")):
+                        side_df = marker_df[marker_df["side"].str.lower() == fill_side]
+                        if not side_df.empty:
+                            fig.add_scatter(
+                                x=side_df["executed_at"], y=side_df["price"], mode="markers",
+                                name=f"{fill_side} 成交", marker={"color": color, "size": 10, "symbol": marker},
+                                hovertext=side_df["quantity"].astype(str),
+                            )
+                fig.update_layout(height=520, xaxis_rangeslider_visible=False, margin={"l": 20, "r": 20, "t": 30, "b": 20})
+                st.plotly_chart(fig, use_container_width=True)
+                last = candles[-1]
+                first = candles[0]
+                return_pct = ((last["close"] / first["close"] - 1) * 100) if first.get("close") else None
+                st.session_state["okx_market_context"] = {
+                    "symbol": chart_symbol, "bar": chart_bar, "last_candle": last,
+                    "window_return_pct": return_pct, "fill_count_on_chart": len(chart_fills),
+                }
+        except Exception as exc:
+            st.error(f"K 线读取失败：{exc}")
+
+if orders or fills:
+    order_col, fill_col = st.columns(2)
+    with order_col:
+        st.markdown("**最近订单**")
+        order_df = pd.DataFrame(_row_dicts(orders))
+        order_columns = ["order_id", "symbol", "side", "position_side", "order_type", "status", "price", "avg_price", "quantity", "filled_quantity", "updated_at"]
+        st.dataframe(order_df[[column for column in order_columns if column in order_df.columns]], use_container_width=True, hide_index=True)
+    with fill_col:
+        st.markdown("**最近成交**")
+        fill_df = pd.DataFrame(_row_dicts(fills))
+        fill_columns = ["fill_id", "order_id", "symbol", "side", "price", "quantity", "fee", "fee_asset", "realized_pnl", "executed_at"]
+        st.dataframe(fill_df[[column for column in fill_columns if column in fill_df.columns]], use_container_width=True, hide_index=True)
 
 st.subheader("记录交易计划/成交理由")
 with st.form("trade_note_form", clear_on_submit=False):
@@ -94,7 +235,28 @@ else:
         if require_admin("生成 AI 交易点评"):
             with st.spinner("AI 正在复盘这笔已记录交易……"):
                 try:
-                    review_trade_note(selected_id)
+                    selected_order_id = (selected["order_id"] or "").strip()
+                    context_orders = query_trade_orders(
+                        venue=selected["venue"],
+                        symbol=selected["symbol"],
+                        order_id=selected_order_id or None,
+                        limit=20,
+                    )
+                    context_fills = query_trade_fills(
+                        venue=selected["venue"],
+                        symbol=selected["symbol"],
+                        order_id=selected_order_id or None,
+                        limit=50,
+                    )
+                    order_context = {
+                        "orders": _row_dicts(context_orders),
+                        "fills": _row_dicts(context_fills),
+                    }
+                    review_trade_note(
+                        selected_id,
+                        order_context=order_context,
+                        market_context=st.session_state.get("okx_market_context", {}),
+                    )
                     st.success("点评已保存。")
                 except Exception as exc:
                     st.error(f"AI 点评失败：{exc}")

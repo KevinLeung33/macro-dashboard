@@ -2,13 +2,38 @@
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import os
+from pathlib import Path
 import time
 
 import requests
 
 logger = logging.getLogger("notifier")
+
+
+def _notification_status_path():
+    configured = os.getenv("RUNTIME_LOCK_DIR", "").strip()
+    lock_dir = Path(configured) if configured else Path(__file__).resolve().parents[1] / "runtime" / "locks"
+    return lock_dir.parent / "notification_status.json"
+
+
+def _record_notification_status(channels, results):
+    """Persist delivery results so health checks can detect a broken notifier."""
+    path = _notification_status_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "updated_at": time.time(),
+            "channels": list(channels or []),
+            "results": {str(key): bool(value) for key, value in (results or {}).items()},
+        }
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(path)
+    except OSError as exc:
+        logger.warning("Could not persist notification status: %s", exc)
 
 
 def send_telegram(message, bot_token=None, chat_id=None):
@@ -157,4 +182,5 @@ def notify(message, channels=None, title=None, level=None):
     if "webhook" in channels:
         results["webhook"] = send_webhook(message)
 
+    _record_notification_status(channels, results)
     return results

@@ -44,6 +44,10 @@ _COMPATIBLE_COLUMNS = {
         "ai_watch_next": "TEXT DEFAULT ''",
         "ai_updated_at": "TIMESTAMP",
     },
+    "trade_account_snapshots": {
+        "account_mode": "TEXT DEFAULT ''",
+        "margin_mode": "TEXT DEFAULT 'cross'",
+    },
 }
 
 
@@ -404,6 +408,8 @@ def init_db():
                 available_balance REAL,
                 unrealized_pnl REAL,
                 margin_ratio REAL,
+                account_mode TEXT DEFAULT '',
+                margin_mode TEXT DEFAULT 'cross',
                 raw_json TEXT DEFAULT '',
                 synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -463,6 +469,32 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_trade_fills_symbol_time
                 ON trade_fills(symbol, executed_at DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue TEXT NOT NULL,
+                account_label TEXT DEFAULT '',
+                symbol TEXT NOT NULL,
+                instrument_type TEXT DEFAULT 'perpetual',
+                margin_mode TEXT DEFAULT 'cross',
+                position_side TEXT DEFAULT '',
+                quantity REAL DEFAULT 0,
+                entry_price REAL,
+                mark_price REAL,
+                liquidation_price REAL,
+                leverage REAL,
+                unrealized_pnl REAL,
+                unrealized_pnl_ratio REAL,
+                margin REAL,
+                notional REAL,
+                updated_at TEXT,
+                raw_json TEXT DEFAULT '',
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(venue, account_label, symbol, position_side)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_positions_symbol
+                ON trade_positions(symbol, updated_at DESC);
 
             -- 下单前仅记录交易理由；AI 不在下单前阻止或质疑交易。
             CREATE TABLE IF NOT EXISTS trade_notes (
@@ -649,6 +681,8 @@ def init_db():
         _ensure_column(conn, "news_clusters", "ai_implications")
         _ensure_column(conn, "news_clusters", "ai_watch_next")
         _ensure_column(conn, "news_clusters", "ai_updated_at")
+        _ensure_column(conn, "trade_account_snapshots", "account_mode")
+        _ensure_column(conn, "trade_account_snapshots", "margin_mode")
         # This index must be created after the compatibility migration above.
         # Older databases do not yet have processing_status when executescript runs.
         conn.execute(

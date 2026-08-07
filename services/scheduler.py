@@ -136,7 +136,7 @@ class MacroScheduler:
         self.scheduler.start()
         logger.info(
             "Scheduler started with timezone=%s current_time=%s; jobs: "
-            "data/6h, RSS/%sm, news/1h, cpolar/%sm, daily/8am, weekly/Mon9am",
+            "data/6h, RSS/%sm, news/1h, system-health/%sm, daily/8am, weekly/Mon9am",
             timezone_name(),
             self._now(),
             os.getenv("NEWS_FAST_REFRESH_MINUTES", "15") if self.fast_news_fetcher else "off",

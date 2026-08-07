@@ -1461,15 +1461,16 @@ def query_trade_notes(limit=100, symbol=None):
 
 def upsert_trade_account_snapshot(venue, account_label="", observed_at="", equity=None,
                                   available_balance=None, unrealized_pnl=None,
-                                  margin_ratio=None, raw_json=None):
+                                  margin_ratio=None, account_mode="", margin_mode="cross",
+                                  raw_json=None):
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO trade_account_snapshots
                (venue, account_label, observed_at, equity, available_balance,
-                unrealized_pnl, margin_ratio, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                unrealized_pnl, margin_ratio, account_mode, margin_mode, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (venue, account_label, observed_at, equity, available_balance, unrealized_pnl,
-             margin_ratio, _json_text(raw_json or {})),
+             margin_ratio, account_mode or "", margin_mode or "cross", _json_text(raw_json or {})),
         )
         return cur.lastrowid
 
@@ -1487,6 +1488,99 @@ def query_latest_trade_account_snapshot(venue=None, account_label=""):
             """SELECT * FROM trade_account_snapshots
                ORDER BY observed_at DESC, id DESC LIMIT 1"""
         ).fetchone()
+
+
+def upsert_trade_position(position):
+    """保存 OKX/其他交易所只读同步到的当前持仓。"""
+    values = (
+        position.get("venue", ""), position.get("account_label", ""), position.get("symbol", ""),
+        position.get("instrument_type", "perpetual"), position.get("margin_mode", "cross"),
+        position.get("position_side", ""), position.get("quantity", 0), position.get("entry_price"),
+        position.get("mark_price"), position.get("liquidation_price"), position.get("leverage"),
+        position.get("unrealized_pnl"), position.get("unrealized_pnl_ratio"), position.get("margin"),
+        position.get("notional"), position.get("updated_at", ""), _json_text(position.get("raw_json", {})),
+    )
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO trade_positions
+               (venue, account_label, symbol, instrument_type, margin_mode, position_side,
+                quantity, entry_price, mark_price, liquidation_price, leverage,
+                unrealized_pnl, unrealized_pnl_ratio, margin, notional, updated_at, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(venue, account_label, symbol, position_side) DO UPDATE SET
+                 instrument_type=excluded.instrument_type, margin_mode=excluded.margin_mode,
+                 quantity=excluded.quantity, entry_price=excluded.entry_price,
+                 mark_price=excluded.mark_price, liquidation_price=excluded.liquidation_price,
+                 leverage=excluded.leverage, unrealized_pnl=excluded.unrealized_pnl,
+                 unrealized_pnl_ratio=excluded.unrealized_pnl_ratio, margin=excluded.margin,
+                 notional=excluded.notional, updated_at=excluded.updated_at,
+                 raw_json=excluded.raw_json, synced_at=CURRENT_TIMESTAMP""",
+            values,
+        )
+        return cur.lastrowid
+
+
+def clear_trade_positions(venue, account_label=""):
+    with get_db() as conn:
+        conn.execute(
+            "DELETE FROM trade_positions WHERE venue = ? AND account_label = ?",
+            (venue, account_label),
+        )
+
+
+def query_trade_positions(venue=None, account_label="", symbol=None, limit=100):
+    with get_db() as conn:
+        clauses = []
+        values = []
+        if venue:
+            clauses.append("venue = ?")
+            values.append(venue)
+        if account_label:
+            clauses.append("account_label = ?")
+            values.append(account_label)
+        if symbol:
+            clauses.append("symbol = ?")
+            values.append(symbol)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.append(limit)
+        return conn.execute(
+            f"SELECT * FROM trade_positions{where} ORDER BY updated_at DESC, id DESC LIMIT ?",
+            values,
+        ).fetchall()
+
+
+def query_trade_orders(venue=None, account_label="", symbol=None, order_id=None, limit=100):
+    with get_db() as conn:
+        clauses = []
+        values = []
+        for column, value in (("venue", venue), ("account_label", account_label),
+                              ("symbol", symbol), ("order_id", order_id)):
+            if value:
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.append(limit)
+        return conn.execute(
+            f"SELECT * FROM trade_orders{where} ORDER BY COALESCE(updated_at, placed_at) DESC, id DESC LIMIT ?",
+            values,
+        ).fetchall()
+
+
+def query_trade_fills(venue=None, account_label="", symbol=None, order_id=None, limit=200):
+    with get_db() as conn:
+        clauses = []
+        values = []
+        for column, value in (("venue", venue), ("account_label", account_label),
+                              ("symbol", symbol), ("order_id", order_id)):
+            if value:
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.append(limit)
+        return conn.execute(
+            f"SELECT * FROM trade_fills{where} ORDER BY executed_at DESC, id DESC LIMIT ?",
+            values,
+        ).fetchall()
 
 
 def insert_trade_ai_review(note_id, order_id, model, prompt_version, status, review,

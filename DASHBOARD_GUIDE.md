@@ -74,7 +74,7 @@ python -c "from data.pipeline import fetch_all; fetch_all(incremental=True)"
 - 每日沉淀：保存每日研究包和 AI 趋势日报。
 - 研究假设：维护你的长期假设、观点日志和观察项。
 - 信号复盘：保存组合信号，跟踪资产后续表现，并统计信号有效性。
-- 交易复盘：只读交易接入的准备层；先手工记录 Crypto 交易理由，再主动调用 AI 做事后点评。
+- 交易复盘：OKX 只读交易看板；展示跨币种保证金账户、持仓、订单、成交和 K 线，并可主动调用 AI 做事后点评。
 
 ## 3. 数据源
 
@@ -517,7 +517,7 @@ P1 新增数据源依赖外部接口，部署后先执行一次手动刷新，�
 
 ### 9.6 cpolar 与看板可用性监控
 
-服务器会每 5 分钟执行一次 P0/P1 健康检查：检查本机 Streamlit、FastAPI、cpolar 公网 URL、定时任务新鲜度、数据源抓取状态、RSS 源状态、SQLite 完整性和磁盘空间。状态变化时才发送告警，避免重复刷屏；恢复后会发送恢复通知。
+服务器会每 5 分钟执行一次 P0/P1/P2 健康检查：P0 检查本机 Streamlit、FastAPI 和 cpolar 公网 URL；P1 检查定时任务新鲜度、数据源/RSS 状态、SQLite 完整性和磁盘空间；P2 检查数据库备份新鲜度与完整性、新闻 AI 失败堆积和通知渠道投递状态。状态变化时才发送告警，避免重复刷屏；恢复后会发送恢复通知。
 
 在服务器 `.env` 中配置 cpolar 为 8501 隧道生成的公网 URL，并启用飞书通知：
 
@@ -537,9 +537,33 @@ HEALTH_DATA_SOURCE_MAX_AGE_SECONDS=43200
 HEALTH_RSS_SOURCE_MAX_AGE_SECONDS=21600
 HEALTH_MIN_FREE_BYTES=524288000
 HEALTH_MIN_FREE_PERCENT=10
+HEALTH_BACKUP_MAX_AGE_SECONDS=129600
+HEALTH_AI_FAILED_ARTICLES_MAX=5
+HEALTH_AI_FAILURE_RECENT_SECONDS=86400
+HEALTH_NOTIFICATION_STATUS_MAX_AGE_SECONDS=86400
 ```
 
 如果没有配置 `CPOLAR_PUBLIC_URL`，系统只能检查本机 8501，无法确认 cpolar 隧道状态。修改 `.env` 后重启 `macro-dashboard-server`。
+
+### 9.7 OKX 只读交易看板
+
+在服务器 `.env` 中配置 OKX API，但在 OKX 后台只勾选 `Read` 权限，并设置 IP 白名单；不要开启 Trade 或 Withdraw，也不要把密钥写入数据库、日志或 Git：
+
+```env
+OKX_API_KEY=你的只读Key
+OKX_API_SECRET=你的Secret
+OKX_API_PASSPHRASE=你的Passphrase
+OKX_API_BASE_URL=https://www.okx.com
+OKX_API_DEMO=false
+OKX_ACCOUNT_LABEL=main
+OKX_INST_TYPE=SWAP
+OKX_REQUIRED_ACCOUNT_LEVEL=3
+OKX_SYNC_LIMIT=100
+```
+
+`OKX_REQUIRED_ACCOUNT_LEVEL=3` 对应 OKX 的 Multi-currency margin。交易复盘页的“同步 OKX 账户”只调用只读接口，写入账户快照、当前非零持仓、挂单/历史订单和成交；“刷新 K 线”读取公开行情，并在图上标记已同步成交。页面不提供下单、撤单或资金操作。
+
+交易记录仍由用户手工填写。点击“生成 AI 交易点评”时，系统会将该交易匹配到的订单/成交、当前 K 线摘要和原始交易理由交给 AI，点评结果只作为事后复盘记录，不参与下单前批准。
 
 ### 9.4 飞书日报卡片与故障告警
 
