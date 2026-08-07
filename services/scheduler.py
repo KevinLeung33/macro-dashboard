@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from services.runtime_controls import (
     TaskBusyError,
     hold_task,
@@ -16,12 +17,15 @@ logger = logging.getLogger("scheduler")
 
 
 class MacroScheduler:
-    def __init__(self, data_pipeline, news_fetcher, report_builder, notifier, fast_news_fetcher=None):
+    def __init__(self, data_pipeline, news_fetcher, report_builder, notifier,
+                 fast_news_fetcher=None, cpolar_checker=None, health_checker=None):
         self.timezone = app_timezone()
         self.scheduler = BackgroundScheduler(timezone=self.timezone)
         self.data_pipeline = data_pipeline
         self.news_fetcher = news_fetcher
         self.fast_news_fetcher = fast_news_fetcher
+        # cpolar_checker 保留为兼容旧调用；新版本统一使用 health_checker。
+        self.health_checker = health_checker or cpolar_checker
         self.report_builder = report_builder
         self.notifier = notifier
 
@@ -58,6 +62,15 @@ class MacroScheduler:
             logger.warning("Fast RSS fetch skipped: another fast RSS refresh is running")
         except Exception as e:
             logger.error("Fast RSS fetch failed: %s", e)
+
+    def _check_system_health(self):
+        if not self.health_checker:
+            return
+        try:
+            self.health_checker()
+        except Exception as e:
+            # 健康检查不能反过来拖垮数据、新闻和日报任务。
+            logger.error("system health check failed: %s", e)
 
     def _daily_report(self):
         logger.info("Scheduled: generating daily report at %s...", self._now())
@@ -103,6 +116,19 @@ class MacroScheduler:
                 id="news_fast_refresh",
                 replace_existing=True,
             )
+        if self.health_checker and os.getenv("CPOLAR_HEALTH_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+            try:
+                health_minutes = max(1, int(os.getenv("CPOLAR_HEALTH_CHECK_MINUTES", "5")))
+            except ValueError:
+                health_minutes = 5
+            # 启动后立即检查一次，之后按配置周期检查。
+            self._check_system_health()
+            self.scheduler.add_job(
+                self._check_system_health,
+                IntervalTrigger(minutes=health_minutes),
+                id="system_health_check",
+                replace_existing=True,
+            )
         # Daily report: 8:00 AM
         self.scheduler.add_job(self._daily_report, CronTrigger(hour=8, minute=0))
         # Weekly report: Monday 9:00 AM
@@ -110,10 +136,11 @@ class MacroScheduler:
         self.scheduler.start()
         logger.info(
             "Scheduler started with timezone=%s current_time=%s; jobs: "
-            "data/6h, RSS/%sm, news/1h, daily/8am, weekly/Mon9am",
+            "data/6h, RSS/%sm, news/1h, cpolar/%sm, daily/8am, weekly/Mon9am",
             timezone_name(),
             self._now(),
             os.getenv("NEWS_FAST_REFRESH_MINUTES", "15") if self.fast_news_fetcher else "off",
+            os.getenv("CPOLAR_HEALTH_CHECK_MINUTES", "5") if self.health_checker else "off",
         )
 
     def _recover_missed_tasks(self):

@@ -515,6 +515,32 @@ P1 新增数据源依赖外部接口，部署后先执行一次手动刷新，�
 
 对于“任务没有失败、但内部发生了可恢复异常”的情况，例如 AI 日报接口失败后自动生成规则版日报，系统会在 `NOTIFY_ON_RUNTIME_ERROR=true` 时发送“宏观看板运行告警”。日报和新闻分析会包含具体错误摘要以及已经采取的回退动作；同一个错误默认在 `RUNTIME_ERROR_NOTIFY_COOLDOWN_SECONDS=900` 秒内只推送一次，避免接口连续超时造成通知刷屏。服务器更新代码后需要重启 `macro-dashboard-server`，使 systemd 重新加载代码和 `.env`。
 
+### 9.6 cpolar 与看板可用性监控
+
+服务器会每 5 分钟执行一次 P0/P1 健康检查：检查本机 Streamlit、FastAPI、cpolar 公网 URL、定时任务新鲜度、数据源抓取状态、RSS 源状态、SQLite 完整性和磁盘空间。状态变化时才发送告警，避免重复刷屏；恢复后会发送恢复通知。
+
+在服务器 `.env` 中配置 cpolar 为 8501 隧道生成的公网 URL，并启用飞书通知：
+
+```env
+CPOLAR_HEALTH_ENABLED=true
+CPOLAR_PUBLIC_URL=https://你的-cpolar-8501-公网地址
+CPOLAR_LOCAL_URL=http://127.0.0.1:8501
+CPOLAR_HEALTH_CHECK_MINUTES=5
+CPOLAR_HEALTH_TIMEOUT_SECONDS=15
+NOTIFY_CHANNELS=lark
+
+# 可选阈值
+HEALTH_STARTUP_GRACE_MINUTES=10
+HEALTH_DATA_MAX_AGE_SECONDS=43200
+HEALTH_NEWS_MAX_AGE_SECONDS=10800
+HEALTH_DATA_SOURCE_MAX_AGE_SECONDS=43200
+HEALTH_RSS_SOURCE_MAX_AGE_SECONDS=21600
+HEALTH_MIN_FREE_BYTES=524288000
+HEALTH_MIN_FREE_PERCENT=10
+```
+
+如果没有配置 `CPOLAR_PUBLIC_URL`，系统只能检查本机 8501，无法确认 cpolar 隧道状态。修改 `.env` 后重启 `macro-dashboard-server`。
+
 ### 9.4 飞书日报卡片与故障告警
 
 在飞书群中添加“自定义机器人”，复制 Webhook 地址后写入服务器 `.env`：

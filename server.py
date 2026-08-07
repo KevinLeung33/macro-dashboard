@@ -55,6 +55,7 @@ def main():
     from db.schema import init_db
     from services.scheduler import MacroScheduler
     from services.news_fetcher import fetch_all_news, fetch_rss
+    from services.system_health import check_system_health
     from services.report_builder import build_report
     from services.notifier import notify
     from services.daily_context import get_data_health, save_daily_context
@@ -97,6 +98,7 @@ def main():
         data_pipeline=lambda: fetch_all(include_global=True),
         news_fetcher=news_pipeline,
         fast_news_fetcher=fetch_rss,
+        health_checker=check_system_health,
         report_builder=build_scheduled_report,
         notifier=lambda msg: notify(msg, channels),
     )
