@@ -50,7 +50,6 @@ CRITICAL_SERIES = [
     ("crypto_flows", "BTC_EXCHANGE_NETFLOW"),
     ("akshare", "CN_PMI"),
     ("akshare", "CN_M2_YOY"),
-    ("akshare", "CN_SOCIAL_FINANCING_STOCK_YOY"),
     ("akshare", "CN_DR007"),
     ("binance_spot", "BTC-USD"),
     ("binance_spot", "ETH-USD"),

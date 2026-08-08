@@ -247,7 +247,7 @@ YFINANCE_SYMBOLS = {
 AKSHARE_SERIES = {
     "CN_PMI": {
         "display_name": "🇨🇳 中国官方制造业PMI", "unit": "", "category": "global_cycle",
-        "fetch_func": "macro_china_pmi", "post_process": "pmi",
+        "fetch_func": "macro_china_pmi", "post_process": "pmi", "valid_range": (20, 80),
         # Eastmoney's response schema occasionally changes.  The Jin10-backed
         # endpoint has the same logical series and was verified on production
         # before being registered as a fallback.
@@ -257,11 +257,11 @@ AKSHARE_SERIES = {
     },
     "CN_CAIXIN_PMI": {
         "display_name": "🇨🇳 中国财新制造业PMI", "unit": "", "category": "global_cycle",
-        "fetch_func": "macro_china_cx_pmi_yearly", "post_process": "event_current",
+        "fetch_func": "macro_china_cx_pmi_yearly", "post_process": "event_current", "valid_range": (20, 80),
     },
     "CN_LPR_1Y": {
         "display_name": "🇨🇳 中国LPR 1年期", "unit": "%", "category": "global_cycle",
-        "fetch_func": "macro_china_lpr", "post_process": "lpr",
+        "fetch_func": "macro_china_lpr", "post_process": "lpr", "valid_range": (0, 20),
     },
     "CN_SOCIAL_FINANCING": {
         "display_name": "🇨🇳 中国社融增量", "unit": "亿元", "category": "global_cycle",
@@ -269,24 +269,41 @@ AKSHARE_SERIES = {
     },
     "CN_CPI": {
         "display_name": "🇨🇳 中国CPI同比", "unit": "%", "category": "global_cycle",
-        "fetch_func": "macro_china_cpi_monthly", "post_process": "cpi",
+        # `macro_china_cpi_monthly` is a Jin10 event feed for CPI *month-on-month*
+        # releases.  It must not be presented as the CPI YoY series.  This
+        # Eastmoney endpoint supplies the explicitly named 全国-同比增长 column.
+        "fetch_func": "macro_china_cpi", "post_process": "keyword_yoy",
+        "valid_range": (-10, 30),
     },
     "CN_PPI": {
         "display_name": "🇨🇳 中国PPI同比", "unit": "%", "category": "global_cycle",
-        "fetch_func": "macro_china_ppi", "post_process": "second_col",
+        # The second column is the index level (for example 103.9), not YoY.
+        "fetch_func": "macro_china_ppi", "post_process": "keyword_yoy",
+        "valid_range": (-30, 30),
     },
     "CN_M2_YOY": {
         "display_name": "🇨🇳 中国M2同比", "unit": "%", "category": "china_liquidity",
         "fetch_func": "macro_china_m2_yearly", "post_process": "event_current",
+        "valid_range": (0, 50),
     },
     "CN_SOCIAL_FINANCING_STOCK_YOY": {
         "display_name": "🇨🇳 社融存量同比", "unit": "%", "category": "china_liquidity",
+        # macro_china_shrzgm only provides the flow (社融增量), not stock YoY.
+        # Keep the definition for a future verified source, but never create a
+        # synthetic "同比" series by reusing the flow column.
+        "enabled": False,
+        "disabled_reason": "当前 AKShare 接口不含社融存量同比字段，等待服务器验证替代源",
         "fetch_func": "macro_china_shrzgm", "post_process": "keyword_stock",
     },
     "CN_DR007": {
-        "display_name": "🇨🇳 DR007", "unit": "%", "category": "china_liquidity",
+        # repo_rate_hist returns FDR007, the fixing rate calculated from DR007
+        # transactions; label it precisely instead of conflating the two.
+        "display_name": "🇨🇳 FDR007（DR007定盘）", "unit": "%", "category": "china_liquidity",
         "fetch_func": "repo_rate_hist", "post_process": "repo_fdr007",
         "fetch_window_days": 365,
+        "retry_attempts": 3,
+        "retry_delay_seconds": 1.5,
+        "valid_range": (0, 20),
     },
 }
 

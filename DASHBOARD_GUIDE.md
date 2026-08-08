@@ -514,7 +514,7 @@ python -c "from services.maintenance import restore_database; print(restore_data
 P1 新增数据源依赖外部接口，部署后先执行一次手动刷新，再检查页面、抓取日志和数据库中的 `source_url`、`fetched_at`、`release_at`：
 
 - Yahoo Finance：确认 `USDCNH=X`、`USDCNY=X`、`000300.SS`、`399006.SZ`、`^HSTECH` 返回非空数据；部分符号不可用时应记录失败，不影响其他指标。
-- AKShare：确认 M2 同比、社融存量同比、DR007 的接口版本和字段名称匹配；AKShare 升级后优先查看抓取日志中的字段错误。
+- AKShare：确认 CPI/PPI 同比、M2 同比和 FDR007（DR007 定盘）的接口版本及字段名称匹配；社融存量同比在验证到具备该字段的来源前不展示。AKShare 升级后优先查看抓取日志中的字段错误。
 - Binance：确认现货 K 线、资金费率和 OI 接口可访问，核对 OI 返回值的单位，并留意公共接口的限频响应。
 - ETF/交易所资金流：在 `.env` 配置 `BTC_ETF_FLOWS_URL`、`BTC_EXCHANGE_NETFLOW_URL` 后，确认返回 CSV/JSON 至少包含 `date` 和 `flow`、`net_flow`、`value` 或 `amount` 字段。
 - 空数据降级：移除可选资金流 URL 或模拟接口失败，确认页面仍可打开，并显示“未配置或暂无数据”。
@@ -533,6 +533,17 @@ python probe_candidate_sources.py
 脚本不会写数据库、不会修改 `.env`、不会调用 AI。它会复测当前失败的 BLS、Reuters、Caixin、The Block 路径，测试国家统计局和 ECB 的官方 RSS，并测试 BLS API、AKShare 的替代宏观接口；如在 `.env` 临时配置 `FINNHUB_API_KEY` 或 `TUSHARE_TOKEN`，还会各发起一次最小 API 请求。只有在服务器实测通过后才接入；国家统计局和 ECB 是优先的正式官方源，财新 RSS 镜像则需要显式设置 `CAIXIN_RSS_MIRROR_URL` 才会启用。
 
 `NOTIFY_CHANNELS` 支持 `telegram,lark,email,webhook`，并会自动忽略逗号两侧空格。服务器任务失败和运行告警读取这里的渠道配置；网页“通知规则”中的渠道主要用于紧急新闻推送。Alpha Vantage 新闻和行情使用同一个 `ALPHA_VANTAGE_KEY`；不再读取 `FINNHUB_API_KEY`。
+
+### 9.5 中国宏观数据质量探测
+
+中国宏观指标在 AKShare 上既有历史表，也有经济日历事件表；两者字段和含义并不总能直接互换。每次升级 AKShare 或替换来源前，先在服务器执行以下只读探测：
+
+```bash
+source .venv/bin/activate
+python probe_china_macro_sources.py
+```
+
+它会检查 CPI/PPI 同比列、M2 候选表、社融增量和 FDR007 的实际列名、可用数值与最新日期；不会写数据库、不会刷新看板。只有逻辑指标、字段含义和服务器实测均通过后，才将候选源接入正式抓取器。
 
 当任务重试耗尽后，若 `NOTIFY_ON_TASK_FAILURE=true`，系统会通过 `NOTIFY_CHANNELS` 配置的 Telegram、飞书、Email 或 Webhook 渠道发送失败通知。通知发送本身不会阻塞任务状态记录；即使通知渠道不可用，也可以在 `runtime/task_status.json` 和日志中查看失败原因。
 
