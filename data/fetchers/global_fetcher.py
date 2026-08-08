@@ -110,6 +110,50 @@ def _post_process(df, pp):
     return records
 
 
+def _candidate_fetch_kwargs(meta, candidate, post_process):
+    """Build endpoint-specific arguments without coupling fallback schemas."""
+    fetch_kwargs = dict(meta.get("fetch_kwargs", {}))
+    fetch_kwargs.update(candidate.get("fetch_kwargs", {}))
+    if post_process == "repo_fdr007":
+        window_days = int(candidate.get("fetch_window_days", meta.get("fetch_window_days", 365)))
+        end_date = date.today()
+        fetch_kwargs.update({
+            "start_date": (end_date - timedelta(days=window_days)).strftime("%Y%m%d"),
+            "end_date": end_date.strftime("%Y%m%d"),
+        })
+    return fetch_kwargs
+
+
+def _fetch_with_fallbacks(ak, meta):
+    """Fetch one logical series, trying a compatible endpoint only if needed."""
+    candidates = [{
+        "fetch_func": meta["fetch_func"],
+        "post_process": meta["post_process"],
+    }]
+    candidates.extend(meta.get("fallbacks", []))
+    failures = []
+
+    for index, candidate in enumerate(candidates):
+        func_name = candidate.get("fetch_func")
+        post_process = candidate.get("post_process", meta["post_process"])
+        func = getattr(ak, func_name, None)
+        if func is None:
+            failures.append(f"{func_name} not found")
+            continue
+        try:
+            df = func(**_candidate_fetch_kwargs(meta, candidate, post_process))
+            if df is None or df.empty:
+                raise ValueError("Empty")
+            records = _post_process(df, post_process)
+            if not records:
+                raise ValueError(f"No usable records, cols={list(df.columns)[:4]}")
+            return df, records, func_name, index > 0
+        except Exception as exc:
+            failures.append(f"{func_name}: {str(exc)[:180]}")
+
+    raise RuntimeError("; ".join(failures) or "No usable fetch function")
+
+
 def fetch_global_data(delay=2.0, incremental=True):
     try:
         import akshare as ak
@@ -121,38 +165,21 @@ def fetch_global_data(delay=2.0, incremental=True):
     for i, sid in enumerate(symbols):
         meta = AKSHARE_SERIES[sid]
         name = meta["display_name"]
-        func_name = meta["fetch_func"]
-        pp = meta["post_process"]
 
         if i > 0:
             time.sleep(delay)
 
         try:
-            func = getattr(ak, func_name, None)
-            if func is None:
-                log_fetch("akshare", sid, "error", error_message=f"{func_name} not found")
-                print(f"  [{i+1}/{len(symbols)}] {name}: FUNC NOT FOUND")
-                continue
-
-            fetch_kwargs = dict(meta.get("fetch_kwargs", {}))
-            if pp == "repo_fdr007":
-                window_days = int(meta.get("fetch_window_days", 365))
-                end_date = date.today()
-                fetch_kwargs.update({
-                    "start_date": (end_date - timedelta(days=window_days)).strftime("%Y%m%d"),
-                    "end_date": end_date.strftime("%Y%m%d"),
-                })
-            df = func(**fetch_kwargs)
-            if df is None or df.empty:
-                log_fetch("akshare", sid, "error", error_message="Empty")
-                print(f"  [{i+1}/{len(symbols)}] {name}: EMPTY")
-                continue
-
-            records = _post_process(df, pp)
-            records = filter_new_records("akshare", sid, records, overlap_days=35) if incremental else records
+            _, raw_records, resolved_func, used_fallback = _fetch_with_fallbacks(ak, meta)
+            records = (
+                filter_new_records("akshare", sid, raw_records, overlap_days=35)
+                if incremental else raw_records
+            )
             if not records:
-                log_fetch("akshare", sid, "error", error_message=f"No records, cols={list(df.columns)[:4]}")
-                print(f"  [{i+1}/{len(symbols)}] {name}: NO DATA, cols={list(df.columns)[:4]}")
+                # A valid monthly series can have no new observation since the
+                # last refresh.  That is a successful fetch, not a source error.
+                log_fetch("akshare", sid, "success", 0)
+                print(f"  [{i+1}/{len(symbols)}] {name}: no new records ({resolved_func})")
                 continue
 
             upsert_time_series("akshare", sid, records)
@@ -164,7 +191,8 @@ def fetch_global_data(delay=2.0, incremental=True):
                 "yaxis_label": meta.get("yaxis_label", ""),
             })
             log_fetch("akshare", sid, "success", len(records))
-            print(f"  [{i+1}/{len(symbols)}] {name}: {len(records)} recs, latest={records[-1]}")
+            fallback_note = f"; fallback={resolved_func}" if used_fallback else ""
+            print(f"  [{i+1}/{len(symbols)}] {name}: {len(records)} recs, latest={records[-1]}{fallback_note}")
         except Exception as e:
             log_fetch("akshare", sid, "error", error_message=str(e))
             print(f"  [{i+1}/{len(symbols)}] {name}: FAILED - {e}")

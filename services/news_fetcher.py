@@ -20,43 +20,44 @@ logger = logging.getLogger("news_fetcher")
 RSS_FEEDS = {
     # 美国官方
     "Federal Reserve": "https://www.federalreserve.gov/feeds/press_all.xml",
-    "BLS Latest": "https://www.bls.gov/feed/bls_latest.rss",
-    "BLS Employment": "https://www.bls.gov/feed/empsit.rss",
-    "BLS CPI": "https://www.bls.gov/feed/cpi.rss",
-    "BLS PPI": "https://www.bls.gov/feed/ppi.rss",
     "SEC Press Releases": "https://www.sec.gov/news/pressreleases.rss",
     "EIA Today in Energy": "https://www.eia.gov/rss/todayinenergy.xml",
     "EIA Press Releases": "https://www.eia.gov/rss/press_rss.xml",
+    # 已在生产服务器实测可用的官方宏观发布源
+    "国家统计局·数据发布": "https://www.stats.gov.cn/sj/zxfb/rss.xml",
+    "国家统计局·数据解读": "https://www.stats.gov.cn/sj/sjjd/rss.xml",
+    "ECB Press Releases": "https://www.ecb.europa.eu/rss/press.html",
+    "ECB Statistical Releases": "https://www.ecb.europa.eu/rss/statpress.html",
     # 金融媒体
     "CNBC Top": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
     "MarketWatch": "https://feeds.content.dowjones.io/public/rss/mw_topstories",
-    "Reuters Business": "https://www.reutersagency.com/feed/?taxonomy=best-sectors&post_type=best&best-sectors=business-finance",
     # Crypto
     "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
-    "The Block": "https://www.theblock.co/rss.xml",
     "Cointelegraph": "https://cointelegraph.com/rss",
-    # 中国
-    "Caixin": "https://rsshub.app/caixin/latest",
     # Crypto 中文官方资讯
     "Wu Blockchain": "https://www.wublock123.com/feed",
 }
 
+# 财新没有在本机可直连的官方 RSS；只允许显式启用已经实测通过的
+# 第三方镜像。它是补充媒体源，绝不作为宏观数据或告警的基础依赖。
+_caixin_rss_mirror = os.getenv("CAIXIN_RSS_MIRROR_URL", "").strip()
+if _caixin_rss_mirror:
+    RSS_FEEDS["Caixin (RSS mirror)"] = _caixin_rss_mirror
+
 RSS_SOURCE_PRIORITY = {
     "Federal Reserve": 0,
-    "BLS Latest": 0,
-    "BLS Employment": 0,
-    "BLS CPI": 0,
-    "BLS PPI": 0,
     "SEC Press Releases": 0,
     "EIA Today in Energy": 0,
     "EIA Press Releases": 0,
-    "Caixin": 0,
+    "国家统计局·数据发布": 0,
+    "国家统计局·数据解读": 0,
+    "ECB Press Releases": 0,
+    "ECB Statistical Releases": 0,
     "Wu Blockchain": 1,
     "CNBC Top": 2,
     "MarketWatch": 2,
-    "Reuters Business": 2,
+    "Caixin (RSS mirror)": 2,
     "CoinDesk": 3,
-    "The Block": 3,
     "Cointelegraph": 3,
 }
 
@@ -81,15 +82,15 @@ def _env_bool(name, default=False):
 
 TOPIC_KEYWORDS = {
     "fed": ["fed", "fomc", "federal reserve", "powell", "warsh", "rate hike", "rate cut", "interest rate", "monetary", "美联储", "联储", "降息", "加息", "利率", "鲍威尔"],
-    "inflation": ["inflation", "cpi", "ppi", "pce", "price index", "cost of living", "通胀", "通缩", "物价"],
-    "growth": ["gdp", "recession", "economic growth", "slowdown", "manufacturing", "pmi", "增长", "衰退", "制造业", "经济"],
+    "inflation": ["inflation", "cpi", "ppi", "pce", "price index", "cost of living", "通胀", "通缩", "物价", "居民消费价格", "生产者价格", "工业品出厂"],
+    "growth": ["gdp", "recession", "economic growth", "slowdown", "manufacturing", "pmi", "增长", "衰退", "制造业", "经济", "工业增加值", "固定资产投资", "社会消费品", "零售", "房地产", "经济运行"],
     "employment": ["jobs", "unemployment", "payroll", "jolts", "layoff", "wage", "就业", "失业", "非农", "工资"],
     "geopolitics": ["iran", "middle east", "war", "sanction", "trade war", "tariff", "hormuz", "opec", "伊朗", "中东", "战争", "制裁", "关税", "地缘"],
     "crypto": ["bitcoin", "btc", "crypto", "ethereum", "defi", "stablecoin", "blockchain", "miner", "比特币", "以太坊", "加密", "区块链", "稳定币", "交易所", "链上", "web3"],
-    "china": ["china", "chinese", "beijing", "pboc", "yuan", "rmb", "onshore", "offshore", "中国", "央行", "人民币"],
+    "china": ["china", "chinese", "beijing", "pboc", "yuan", "rmb", "onshore", "offshore", "中国", "央行", "人民币", "国家统计局", "外汇储备"],
     "energy": ["oil", "crude", "natural gas", "energy", "petroleum", "shale", "原油", "天然气", "能源", "石油"],
     "credit": ["bond", "yield", "credit", "spread", "default", "bank", "financial stability", "债券", "收益率", "信用", "利差", "银行"],
-    "liquidity": ["repo", "sofr", "reserve", "tga", "rrp", "balance sheet", "qt", "qe", "流动性", "回购", "准备金", "逆回购", "缩表"],
+    "liquidity": ["repo", "sofr", "reserve", "tga", "rrp", "balance sheet", "qt", "qe", "流动性", "回购", "准备金", "逆回购", "缩表", "m2", "社会融资", "社融", "信贷"],
 }
 
 

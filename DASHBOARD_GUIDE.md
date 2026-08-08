@@ -92,7 +92,7 @@ python -c "from data.pipeline import fetch_all; fetch_all(incremental=True)"
 - `crypto_liquidity`：DefiLlama 稳定币数据，Kraken/Coinbase ETH/BTC。
 - `crypto_market`：Binance 公共接口的 BTC 资金费率和持仓量历史。
 - `crypto_flows`：可选配置的 BTC ETF flows 和交易所净流入 CSV/JSON 适配器。
-- `news`：官方/媒体 RSS（含 BLS、SEC、EIA、吴说）；RSS 原文快速刷新，AI 分析单独低频运行。Alpha Vantage 新闻默认关闭，避免免费 Key 的 25 次/日额度被定时任务耗尽。
+- `news`：官方/媒体 RSS（含美联储、SEC、EIA、国家统计局、ECB、吴说）；RSS 原文快速刷新，AI 分析单独低频运行。Alpha Vantage 新闻默认关闭，避免免费 Key 的 25 次/日额度被定时任务耗尽。BLS、Reuters 和 The Block 如在服务器被 403/404 拦截，会从正式订阅中退役而保留历史状态；这不影响 FRED 宏观数据。
 
 Crypto 内生流动性目前包括：
 
@@ -530,7 +530,7 @@ source .venv/bin/activate
 python probe_candidate_sources.py
 ```
 
-脚本不会写数据库、不会修改 `.env`、不会调用 AI。它会复测当前失败的 BLS、Reuters、Caixin、The Block 路径，测试国家统计局和 ECB 的官方 RSS，并测试 BLS API、AKShare 的替代宏观接口；如在 `.env` 临时配置 `FINNHUB_API_KEY` 或 `TUSHARE_TOKEN`，还会各发起一次最小 API 请求。将完整输出保存或发回后，再决定接入、保留为备用，还是放弃该源。
+脚本不会写数据库、不会修改 `.env`、不会调用 AI。它会复测当前失败的 BLS、Reuters、Caixin、The Block 路径，测试国家统计局和 ECB 的官方 RSS，并测试 BLS API、AKShare 的替代宏观接口；如在 `.env` 临时配置 `FINNHUB_API_KEY` 或 `TUSHARE_TOKEN`，还会各发起一次最小 API 请求。只有在服务器实测通过后才接入；国家统计局和 ECB 是优先的正式官方源，财新 RSS 镜像则需要显式设置 `CAIXIN_RSS_MIRROR_URL` 才会启用。
 
 `NOTIFY_CHANNELS` 支持 `telegram,lark,email,webhook`，并会自动忽略逗号两侧空格。服务器任务失败和运行告警读取这里的渠道配置；网页“通知规则”中的渠道主要用于紧急新闻推送。Alpha Vantage 新闻和行情使用同一个 `ALPHA_VANTAGE_KEY`；不再读取 `FINNHUB_API_KEY`。
 

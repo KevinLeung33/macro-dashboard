@@ -248,6 +248,12 @@ AKSHARE_SERIES = {
     "CN_PMI": {
         "display_name": "🇨🇳 中国官方制造业PMI", "unit": "", "category": "global_cycle",
         "fetch_func": "macro_china_pmi", "post_process": "pmi",
+        # Eastmoney's response schema occasionally changes.  The Jin10-backed
+        # endpoint has the same logical series and was verified on production
+        # before being registered as a fallback.
+        "fallbacks": [
+            {"fetch_func": "macro_china_pmi_yearly", "post_process": "event_current"},
+        ],
     },
     "CN_CAIXIN_PMI": {
         "display_name": "🇨🇳 中国财新制造业PMI", "unit": "", "category": "global_cycle",

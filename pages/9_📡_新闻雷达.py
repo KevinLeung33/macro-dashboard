@@ -11,6 +11,7 @@ from db.repository import (
 from db.schema import get_db
 from services.ai_review import ai_review_statistics, refresh_ai_analysis_reviews
 from services.news_clusterer import build_news_clusters
+from services.news_fetcher import RSS_FEEDS
 from services.news_research_links import refresh_news_research_links
 from utils.navigation import render_research_target
 from services.time_utils import app_now
@@ -308,7 +309,9 @@ with st.sidebar:
     st.metric("已分析", analyzed)
     st.metric("今日新文章", today_n)
     st.metric("今日分析", today_a)
-    feed_states = query_news_feed_states()
+    # Old feed-state rows are retained in SQLite for audit but are not active
+    # sources after a source replacement, so do not present them as failures.
+    feed_states = [item for item in query_news_feed_states() if item["source"] in RSS_FEEDS]
     with st.expander("RSS 源状态", expanded=False):
         if not feed_states:
             st.caption("尚未抓取 RSS。")

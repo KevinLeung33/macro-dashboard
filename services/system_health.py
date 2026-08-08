@@ -226,8 +226,18 @@ def _rss_issues():
         rows = query_news_feed_states()
     except Exception as exc:
         return [f"RSS 状态读取失败：{str(exc)[:180]}"]
+    try:
+        # Keep historical state for auditability, but monitor only feeds that
+        # are still configured. Retired 403/404 sources must not keep a new
+        # deployment in warning state forever.
+        from services.news_fetcher import RSS_FEEDS
+        active_sources = set(RSS_FEEDS)
+    except Exception:
+        active_sources = None
     for row in rows:
         source = row["source"]
+        if active_sources is not None and source not in active_sources:
+            continue
         if row["last_error"]:
             warnings.append(f"RSS {source} 最近失败：{str(row['last_error'])[:150]}")
         success_at = _parse_timestamp(row["last_success_at"])
