@@ -1,4 +1,5 @@
 """Data source registry for update policy, fallback order and documentation."""
+import os
 
 DATA_SOURCES = {
     "fred": {
@@ -76,6 +77,8 @@ DATA_SOURCES = {
     "crypto_flows": {
         "label": "Crypto fund flows",
         "enabled": True,
+        "optional": True,
+        "required_env_any": ["BTC_ETF_FLOWS_URL", "BTC_EXCHANGE_NETFLOW_URL"],
         "priority": 76,
         "refresh": "daily",
         "incremental": True,
@@ -102,6 +105,20 @@ def source_enabled(source, override=None):
     if override is not None:
         return bool(override)
     return True
+
+
+def source_is_configured(source):
+    """Whether an enabled optional source has the configuration it needs.
+
+    Optional adapters may deliberately run alongside a core pipeline without a
+    provider URL.  They should be shown as unavailable, not treated as a data
+    outage by the health monitor.
+    """
+    config = source_config(source)
+    required_any = config.get("required_env_any") or []
+    if not required_any:
+        return True
+    return any(os.getenv(name, "").strip() for name in required_any)
 
 
 def source_summary_rows():

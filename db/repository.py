@@ -6,6 +6,7 @@ import logging
 
 from db.schema import ensure_news_cluster_schema, get_db
 from db.sqlite_compat import sqlite_date
+from services.news_identity import article_hash, canonicalize_url, title_fingerprint
 
 logger = logging.getLogger(__name__)
 _NEWS_CLUSTER_SCHEMA_READY = False
@@ -678,15 +679,34 @@ def add_event(date, title, description="", category="market", impact="medium"):
 
 def insert_news_article(source, source_type, url, title, summary="", content="",
                          published_at="", topic=""):
-    import hashlib
-    h = hashlib.md5((url or title).encode()).hexdigest()[:16]
+    title = str(title or "").strip()
+    if not title:
+        return None
+    canonical_url = canonicalize_url(url)
+    fingerprint = title_fingerprint(title)
+    h = article_hash(url, title)
     with get_db() as conn:
         try:
+            # Existing databases may still contain URL hashes from the older
+            # implementation.  Check the concrete URL as well as the new
+            # canonical form before relying on the hash uniqueness rule.
+            if canonical_url:
+                existing = conn.execute(
+                    """SELECT id FROM news_articles
+                       WHERE canonical_url = ? OR url = ? LIMIT 1""",
+                    (canonical_url, str(url or "")),
+                ).fetchone()
+                if existing:
+                    return None
             cur = conn.execute(
                 """INSERT OR IGNORE INTO news_articles
-                   (source, source_type, url, title, summary, content, published_at, topic, hash)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (source, source_type, url, title, summary, content, published_at, topic, h),
+                   (source, source_type, url, title, summary, content, published_at, topic,
+                    hash, canonical_url, title_fingerprint)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    source, source_type, url, title, summary, content, published_at, topic,
+                    h, canonical_url, fingerprint,
+                ),
             )
             # INSERT OR IGNORE 时 last_insert_rowid() 可能返回上一条文章的 ID，
             # 会让调用方误以为重复文章是新文章。只有真正插入才返回 ID。
@@ -694,6 +714,33 @@ def insert_news_article(source, source_type, url, title, summary="", content="",
         except Exception:
             logger.exception("Failed to insert news article from source=%s", source)
             return None
+
+
+def backfill_news_article_identities(limit=10000):
+    """Populate identity metadata for legacy rows without deleting raw news."""
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        limit = 10000
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT id, url, title FROM news_articles
+               WHERE COALESCE(title_fingerprint, '') = ''
+               ORDER BY id ASC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        if not rows:
+            return 0
+        conn.executemany(
+            """UPDATE news_articles
+               SET canonical_url = ?, title_fingerprint = ?
+               WHERE id = ?""",
+            [
+                (canonicalize_url(row["url"]), title_fingerprint(row["title"]), row["id"])
+                for row in rows
+            ],
+        )
+        return len(rows)
 
 
 def get_news_feed_state(source):
@@ -734,12 +781,50 @@ def query_news_feed_states():
 def get_unanalyzed_articles(limit=20):
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT id, title, summary, source FROM news_articles "
+            """SELECT id, title, summary, source, source_type, url, published_at,
+                      title_fingerprint
+               FROM news_articles """
             "WHERE is_analyzed = 0 AND processing_status = 'fetched' "
             "ORDER BY published_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return rows
+
+
+def get_recent_analyzed_title_fingerprints(days=3):
+    """Return headline identities already analyzed in the given recent window."""
+    try:
+        days = max(1, int(days))
+    except (TypeError, ValueError):
+        days = 3
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT n.title_fingerprint
+               FROM ai_analyses a
+               JOIN news_articles n ON n.id = a.article_id
+               WHERE COALESCE(n.published_at, a.created_at) >= datetime('now', ?)
+                 AND COALESCE(n.title_fingerprint, '') <> ''""",
+            (f"-{days} days",),
+        ).fetchall()
+    return {str(row["title_fingerprint"]) for row in rows if row["title_fingerprint"]}
+
+
+def mark_articles_deduplicated(article_ids, reason="与近期已分析新闻标题重复"):
+    """Keep raw duplicates for audit, but remove them from the AI work queue."""
+    ids = [int(article_id) for article_id in article_ids if article_id]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" for _ in ids)
+    with get_db() as conn:
+        cur = conn.execute(
+            f"""UPDATE news_articles
+                SET processing_status = 'deduplicated', processing_error = ?,
+                    processing_updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders}) AND is_analyzed = 0
+                  AND processing_status = 'fetched'""",
+            [str(reason or "重复新闻")[:500], *ids],
+        )
+        return cur.rowcount
 
 
 def queue_articles_for_analysis(article_ids):
@@ -851,16 +936,20 @@ def insert_ai_analysis(article_id, model, summary_cn, event_type, macro_channels
                         assets_impacted, direction, severity, confidence,
                         time_horizon, is_new, why, follow_up, raw_json, prompt_version=""):
     with get_db() as conn:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO ai_analyses
                (article_id, model, prompt_version, summary_cn, event_type, macro_channels,
                 assets_impacted, direction, severity, confidence,
                 time_horizon, is_new_information, why_it_matters, follow_up_data, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM ai_analyses WHERE article_id = ?
+               )""",
             (article_id, model, prompt_version, summary_cn, event_type, macro_channels,
              assets_impacted, direction, severity, confidence,
-             time_horizon, is_new, why, follow_up, raw_json),
+             time_horizon, is_new, why, follow_up, raw_json, article_id),
         )
+        return cur.lastrowid if cur.rowcount else None
 
 
 def query_analyzed_news(event_type=None, min_severity=1, assets=None, limit=30, days=None):
@@ -871,7 +960,12 @@ def query_analyzed_news(event_type=None, min_severity=1, assets=None, limit=30, 
                           a.follow_up_data, a.created_at,
                           a.is_new_information,
                           n.title, n.source, n.url, n.published_at
-                   FROM ai_analyses a JOIN news_articles n ON a.article_id = n.id
+                   FROM ai_analyses a
+                   JOIN (
+                       SELECT article_id, MAX(id) AS latest_analysis_id
+                       FROM ai_analyses GROUP BY article_id
+                   ) latest ON latest.latest_analysis_id = a.id
+                   JOIN news_articles n ON a.article_id = n.id
                    WHERE 1=1"""
         params = []
         if event_type:
@@ -900,8 +994,12 @@ def query_recent_analyzed_articles(days=3, limit=200):
                       a.confidence, a.why_it_matters, a.macro_channels,
                       a.follow_up_data, a.created_at,
                       n.id AS article_id, n.title, n.source, n.url,
-                      n.published_at, n.topic
+                      n.canonical_url, n.title_fingerprint, n.published_at, n.topic
                FROM ai_analyses a
+               JOIN (
+                   SELECT article_id, MAX(id) AS latest_analysis_id
+                   FROM ai_analyses GROUP BY article_id
+               ) latest ON latest.latest_analysis_id = a.id
                JOIN news_articles n ON a.article_id = n.id
                WHERE COALESCE(n.published_at, a.created_at) >= datetime('now', ?)
                ORDER BY COALESCE(n.published_at, a.created_at) DESC
@@ -911,15 +1009,39 @@ def query_recent_analyzed_articles(days=3, limit=200):
     return rows
 
 
-def upsert_news_cluster(cluster):
+def count_recent_analyzed_articles(days=3):
+    """Count unique analyzed articles in the rebuild window."""
+    try:
+        days = max(1, int(days))
+    except (TypeError, ValueError):
+        days = 3
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS count
+               FROM (
+                   SELECT a.article_id
+                   FROM ai_analyses a
+                   JOIN (
+                       SELECT article_id, MAX(id) AS latest_analysis_id
+                       FROM ai_analyses GROUP BY article_id
+                   ) latest ON latest.latest_analysis_id = a.id
+                   JOIN news_articles n ON n.id = a.article_id
+                   WHERE COALESCE(n.published_at, a.created_at) >= datetime('now', ?)
+               )""",
+            (f"-{days} days",),
+        ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def upsert_news_cluster(cluster, rebuild_token=""):
     _ensure_news_cluster_ready()
     with get_db() as conn:
         conn.execute(
             """INSERT INTO news_clusters
                (cluster_key, title, summary, event_type, assets_impacted, direction,
                 severity, confidence, first_seen_at, last_seen_at, article_count,
-                primary_source, status, merged_into, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                primary_source, status, merged_into, rebuild_token, evidence_fingerprint, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                ON CONFLICT(cluster_key) DO UPDATE SET
                    title = excluded.title,
                    summary = excluded.summary,
@@ -934,13 +1056,31 @@ def upsert_news_cluster(cluster):
                    primary_source = excluded.primary_source,
                    status = excluded.status,
                    merged_into = NULL,
+                   rebuild_token = excluded.rebuild_token,
+                   evidence_fingerprint = excluded.evidence_fingerprint,
                    ai_status = CASE
-                       WHEN excluded.last_seen_at != news_clusters.last_seen_at
-                            OR excluded.article_count > news_clusters.article_count
+                       WHEN COALESCE(excluded.evidence_fingerprint, '')
+                            != COALESCE(news_clusters.evidence_fingerprint, '')
                        THEN 'pending' ELSE COALESCE(news_clusters.ai_status, 'pending') END,
+                   ai_title = CASE
+                       WHEN COALESCE(excluded.evidence_fingerprint, '')
+                            != COALESCE(news_clusters.evidence_fingerprint, '')
+                       THEN '' ELSE news_clusters.ai_title END,
+                   ai_summary = CASE
+                       WHEN COALESCE(excluded.evidence_fingerprint, '')
+                            != COALESCE(news_clusters.evidence_fingerprint, '')
+                       THEN '' ELSE news_clusters.ai_summary END,
+                   ai_implications = CASE
+                       WHEN COALESCE(excluded.evidence_fingerprint, '')
+                            != COALESCE(news_clusters.evidence_fingerprint, '')
+                       THEN '' ELSE news_clusters.ai_implications END,
+                   ai_watch_next = CASE
+                       WHEN COALESCE(excluded.evidence_fingerprint, '')
+                            != COALESCE(news_clusters.evidence_fingerprint, '')
+                       THEN '' ELSE news_clusters.ai_watch_next END,
                    ai_updated_at = CASE
-                       WHEN excluded.last_seen_at != news_clusters.last_seen_at
-                            OR excluded.article_count > news_clusters.article_count
+                       WHEN COALESCE(excluded.evidence_fingerprint, '')
+                            != COALESCE(news_clusters.evidence_fingerprint, '')
                        THEN NULL ELSE news_clusters.ai_updated_at END,
                    updated_at = CURRENT_TIMESTAMP""",
             (
@@ -958,6 +1098,8 @@ def upsert_news_cluster(cluster):
                 cluster.get("primary_source", ""),
                 cluster.get("status", "active"),
                 cluster.get("merged_into"),
+                rebuild_token or cluster.get("rebuild_token", ""),
+                cluster.get("evidence_fingerprint", ""),
             ),
         )
         row = conn.execute(
@@ -1003,6 +1145,31 @@ def deactivate_stale_news_clusters(days=3):
         return cur.rowcount
 
 
+def deactivate_unseen_news_clusters(rebuild_token, days=3):
+    """Retire current-window cluster variants absent from a successful rebuild.
+
+    This changes only their visibility status; raw articles, old links and alert
+    lineage remain intact for later audit.
+    """
+    token = str(rebuild_token or "").strip()
+    if not token:
+        return 0
+    try:
+        days = max(1, int(days))
+    except (TypeError, ValueError):
+        days = 3
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE news_clusters
+               SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+               WHERE status = 'active' AND merged_into IS NULL
+                 AND COALESCE(last_seen_at, updated_at) >= datetime('now', ?)
+                 AND COALESCE(rebuild_token, '') <> ?""",
+            (f"-{days} days", token),
+        )
+        return cur.rowcount
+
+
 def query_news_clusters(limit=50, min_severity=1, days=3, include_inactive=False):
     _ensure_news_cluster_ready()
     with get_db() as conn:
@@ -1020,7 +1187,11 @@ def query_news_clusters(limit=50, min_severity=1, days=3, include_inactive=False
                       direction, severity, confidence, first_seen_at, last_seen_at,
                       article_count, primary_source, status, merged_into,
                       ai_status, ai_title, ai_summary, ai_implications, ai_watch_next,
-                      ai_updated_at, created_at, updated_at
+                      ai_updated_at, rebuild_token, evidence_fingerprint, created_at, updated_at,
+                      (SELECT COUNT(DISTINCT n.source)
+                         FROM news_article_clusters ac
+                         JOIN news_articles n ON n.id = ac.article_id
+                        WHERE ac.cluster_id = news_clusters.id) AS source_count
                FROM news_clusters
                WHERE {' AND '.join(conditions)}
                ORDER BY severity DESC, last_seen_at DESC
@@ -1170,7 +1341,10 @@ def query_cluster_articles(cluster_id):
                       c.similarity_score
                FROM news_article_clusters c
                JOIN news_articles n ON c.article_id = n.id
-               LEFT JOIN ai_analyses a ON a.article_id = n.id
+               LEFT JOIN ai_analyses a ON a.id = (
+                   SELECT MAX(a2.id) FROM ai_analyses a2
+                   WHERE a2.article_id = n.id
+               )
                WHERE c.cluster_id = ?
                ORDER BY COALESCE(n.published_at, a.created_at) DESC""",
             (cluster_id,),

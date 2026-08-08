@@ -74,6 +74,11 @@ def _env_float(name, default):
     except (TypeError, ValueError):
         return default
 
+
+def _env_bool(name, default=False):
+    raw = os.getenv(name, str(default)).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
 TOPIC_KEYWORDS = {
     "fed": ["fed", "fomc", "federal reserve", "powell", "warsh", "rate hike", "rate cut", "interest rate", "monetary", "美联储", "联储", "降息", "加息", "利率", "鲍威尔"],
     "inflation": ["inflation", "cpi", "ppi", "pce", "price index", "cost of living", "通胀", "通缩", "物价"],
@@ -189,10 +194,19 @@ def fetch_alpha_vantage(api_key=None):
     if not key:
         return 0
 
-    topics = ["crypto", "forex", "economy_macro", "energy", "financial_markets"]
+    # A free Alpha Vantage key allows only 25 requests/day.  The old five-topic
+    # hourly loop made 120 requests/day and therefore guaranteed a rate-limit
+    # response.  This optional source is deliberately narrow when enabled;
+    # primary news coverage comes from RSS and official feeds.
+    topics = [
+        item.strip()
+        for item in os.getenv("ALPHA_VANTAGE_NEWS_TOPICS", "financial_markets").split(",")
+        if item.strip()
+    ]
+    max_requests = _env_int("ALPHA_VANTAGE_NEWS_MAX_REQUESTS_PER_RUN", 1)
     added = 0
 
-    for topic in topics:
+    for topic in topics[:max_requests]:
         try:
             resp = requests.get(
                 "https://www.alphavantage.co/query",
@@ -211,6 +225,7 @@ def fetch_alpha_vantage(api_key=None):
                 url = item.get("url", "")
                 source = item.get("source", "")
                 pub = item.get("time_published", "")
+                pub_str = app_now().astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                 if pub:
                     pub_str = f"{pub[:4]}-{pub[4:6]}-{pub[6:8]} {pub[9:11]}:{pub[11:13]}"
 
@@ -241,22 +256,52 @@ def fetch_alpha_vantage(api_key=None):
 
 def select_for_analysis(limit=15):
     """选择漏斗：从未分析的文章中选出最值得送AI分析的"""
-    from db.repository import get_unanalyzed_articles
+    from db.repository import (
+        backfill_news_article_identities,
+        get_recent_analyzed_title_fingerprints,
+        get_unanalyzed_articles,
+        mark_articles_deduplicated,
+    )
+    from services.news_identity import title_fingerprint
 
-    articles = get_unanalyzed_articles(limit * 3)
+    # Legacy rows predate the identity columns.  Backfilling is metadata-only
+    # and makes the same rules work immediately after an upgrade.
+    backfill_news_article_identities(limit=max(200, limit * 8))
+    articles = get_unanalyzed_articles(limit * 5)
     if not articles:
         return []
 
-    # 去重：同源+同标题摘要相似 → 只留一条
-    seen_titles = set()
-    deduped = []
+    try:
+        dedup_days = max(1, int(os.getenv("NEWS_ANALYSIS_DEDUP_DAYS", "3")))
+    except ValueError:
+        dedup_days = 3
+    analyzed_titles = get_recent_analyzed_title_fingerprints(dedup_days)
+    selected_by_title = {}
+    already_analyzed_ids = []
     for art in articles:
-        short = art["title"][:50].lower().strip()
-        if short not in seen_titles:
-            seen_titles.add(short)
-            deduped.append(art)
+        fingerprint = art["title_fingerprint"] or title_fingerprint(art["title"])
+        if not fingerprint or fingerprint in analyzed_titles:
+            already_analyzed_ids.append(art["id"])
+            continue
+        previous = selected_by_title.get(fingerprint)
+        if previous is None:
+            selected_by_title[fingerprint] = art
+            continue
+        # Prefer the more authoritative source if several feeds carry the
+        # exact same headline. The lower priority number wins.
+        previous_priority = RSS_SOURCE_PRIORITY.get(previous["source"], 9)
+        current_priority = RSS_SOURCE_PRIORITY.get(art["source"], 9)
+        if current_priority < previous_priority:
+            selected_by_title[fingerprint] = art
+
+    # Do not discard same-batch alternatives yet: if the preferred source's AI
+    # request fails, they remain available as a fallback on the next run. Once
+    # any one succeeds, the next pass marks the exact-title copies as skipped.
+    if already_analyzed_ids:
+        mark_articles_deduplicated(already_analyzed_ids)
 
     # 按来源优先级排序：官方源 > 金融媒体 > crypto > 其他
+    deduped = list(selected_by_title.values())
     deduped.sort(key=lambda x: RSS_SOURCE_PRIORITY.get(x["source"], 9))
 
     return deduped[:limit]
@@ -264,8 +309,10 @@ def select_for_analysis(limit=15):
 
 def fetch_all_news(av_key=None):
     total = fetch_rss()
-    if av_key:
+    if av_key and _env_bool("ALPHA_VANTAGE_NEWS_ENABLED", False):
         total += fetch_alpha_vantage(av_key)
+    elif av_key:
+        logger.info("Alpha Vantage news is configured but disabled; RSS remains the primary news source")
     logger.info(f"Total new articles: {total}")
 
     # Select top N for AI analysis

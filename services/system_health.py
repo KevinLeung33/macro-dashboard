@@ -25,12 +25,47 @@ from services.cpolar_monitor import check_cpolar
 from services.daily_context import get_data_health
 from services.notifier import notify
 from services.runtime_controls import parse_notify_channels, read_task_status
+from config.data_sources import source_config, source_is_configured
 
 logger = logging.getLogger("system_health")
 _STATE_LOCK = threading.Lock()
 _LAST_SIGNATURE = None
 _STARTED_AT = time.time()
 _BACKUP_VERIFY_CACHE = {}
+
+
+def _health_state_path():
+    return Path(os.getenv("RUNTIME_LOCK_DIR", "runtime/locks")).parent / "health_status.json"
+
+
+def _read_persisted_signature():
+    """Read the last health state so a service restart does not resend it."""
+    try:
+        payload = json.loads(_health_state_path().read_text(encoding="utf-8"))
+        return str(payload.get("signature") or "") or None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _persist_signature(state, signature):
+    try:
+        path = _health_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "state": state,
+                    "signature": signature,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except OSError:
+        logger.debug("Could not persist health-monitor state", exc_info=True)
 
 
 def _env_float(name, default):
@@ -45,6 +80,16 @@ def _env_int(name, default):
         return max(1, int(os.getenv(name, str(default))))
     except (TypeError, ValueError):
         return default
+
+
+def _env_csv(name, default=""):
+    """Read a comma-separated environment value without treating blanks as data."""
+    raw = os.getenv(name, default)
+    return {
+        item.strip().lower()
+        for item in str(raw or "").split(",")
+        if item.strip()
+    }
 
 
 def _parse_timestamp(value):
@@ -108,6 +153,15 @@ def _data_issues():
     critical = []
     warnings = []
     max_age = _env_float("HEALTH_DATA_SOURCE_MAX_AGE_SECONDS", 43200)
+    # A source failure is not automatically a dashboard outage.  For example,
+    # Stooq and Alpha Vantage are deliberately disabled fallbacks in the
+    # default configuration, and crypto flows are optional until the user
+    # configures a provider URL.  Only configured core sources with no fresh
+    # stored data are eligible for a critical alert.
+    critical_sources = _env_csv(
+        "HEALTH_CRITICAL_DATA_SOURCES",
+        "fred,crypto_liquidity,crypto_market",
+    )
     try:
         rows = get_data_health()
     except Exception as exc:
@@ -119,18 +173,44 @@ def _data_issues():
         source = row.get("source") or "unknown"
         if source in {"news", "ai"}:
             continue
+        config = source_config(source)
+        if config and not bool(config.get("enabled", True)):
+            # Historical fetch-log rows are retained for auditability.  Do not
+            # turn an intentionally disabled fallback into a repeating alarm.
+            continue
+        if config.get("optional") and not source_is_configured(source):
+            # A missing URL for an optional adapter is an intentional
+            # configuration state, not a failed data source.
+            continue
         last_status = str(row.get("last_status") or "").lower()
+        age_hours = row.get("age_hours")
+        try:
+            has_fresh_data = age_hours is not None and float(age_hours) * 3600 <= max_age
+        except (TypeError, ValueError):
+            has_fresh_data = False
+
+        def report_source_issue(message):
+            if source.lower() in critical_sources and not has_fresh_data:
+                critical.append(message)
+            else:
+                warnings.append(message)
+
         if last_status in {"error", "failed"}:
-            critical.append(f"数据源 {source} 抓取失败：{str(row.get('last_error') or '未记录原因')[:160]}")
+            # A single failed symbol does not invalidate a source that still
+            # has fresh valid series.  This is especially common when an
+            # upstream provider retires one optional symbol.
+            report_source_issue(
+                f"数据源 {source} 最近一次抓取失败：{str(row.get('last_error') or '未记录原因')[:160]}"
+            )
             continue
         if last_status == "skipped":
             warnings.append(f"数据源 {source} 被跳过")
         attempt_at = _parse_timestamp(row.get("last_fetch_attempt"))
         if attempt_at is None:
             if now - _STARTED_AT >= startup_grace:
-                critical.append(f"数据源 {source} 没有抓取记录")
+                report_source_issue(f"数据源 {source} 没有抓取记录")
         elif now - attempt_at > max_age:
-            critical.append(f"数据源 {source} 已 {((now - attempt_at) / 3600):.1f} 小时未抓取")
+            report_source_issue(f"数据源 {source} 已 {((now - attempt_at) / 3600):.1f} 小时未抓取")
         quality_count = int(row.get("quality_issue_count") or 0)
         if quality_count:
             warnings.append(f"数据源 {source} 有 {quality_count} 条未解决质量问题")
@@ -318,12 +398,16 @@ def check_system_health():
     signature = state + "|" + "|".join(sorted(critical + warnings))
     global _LAST_SIGNATURE
     with _STATE_LOCK:
-        previous = _LAST_SIGNATURE
+        previous = _LAST_SIGNATURE or _read_persisted_signature()
         if previous != signature:
-            if previous is not None:
+            # A first-ever non-OK state is useful, but a server restart should
+            # reuse the persisted signature and stay quiet until the state
+            # actually changes.
+            if previous is not None or state != "ok":
                 _send_transition(state, critical, warnings)
-            elif state != "ok":
-                _send_transition(state, critical, warnings)
+            _LAST_SIGNATURE = signature
+            _persist_signature(state, signature)
+        else:
             _LAST_SIGNATURE = signature
 
     logger.info("System health state=%s critical=%s warnings=%s", state, len(critical), len(warnings))

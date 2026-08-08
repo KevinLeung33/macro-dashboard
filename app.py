@@ -209,8 +209,8 @@ health_rows = get_data_health()
 if health_rows:
     st.subheader("🩺 数据状态")
     health_cols = st.columns(min(len(health_rows), 6))
-    status_icon = {"fresh": "🟢", "quality_warning": "🟡", "stale": "🟡", "old": "🔴", "error": "🔴", "unavailable": "⚪", "unknown": "⚪"}
-    status_text = {"fresh": "新鲜", "quality_warning": "有质量提醒", "stale": "偏旧", "old": "过旧", "error": "失败", "unavailable": "未配置/不可用", "unknown": "未知"}
+    status_icon = {"fresh": "🟢", "quality_warning": "🟡", "stale": "🟡", "old": "🔴", "error": "🔴", "unavailable": "⚪", "disabled": "⚫", "unknown": "⚪"}
+    status_text = {"fresh": "新鲜", "quality_warning": "有质量提醒", "stale": "偏旧", "old": "过旧", "error": "失败", "unavailable": "未配置/不可用", "disabled": "已停用", "unknown": "未知"}
     for i, item in enumerate(health_rows[:6]):
         with health_cols[i % len(health_cols)]:
             age = item.get("age_hours")

@@ -97,7 +97,15 @@ def _candidate_groups(clusters):
             similarity = _similarity(left, right)
             same_type = str(left["event_type"] or "") == str(right["event_type"] or "")
             asset_overlap = bool(_assets(left["assets_impacted"]) & _assets(right["assets_impacted"]))
-            if similarity >= 0.72 or (similarity >= 0.38 and (same_type or asset_overlap)):
+            # AI is a second-pass safety net, not a broad thematic merger.
+            # In particular, two ``other`` clusters or two clusters that only
+            # share BTC/DXY must not be treated as one concrete event.
+            same_specific_type = same_type and str(left["event_type"] or "") != "other"
+            if (
+                (same_specific_type and similarity >= 0.64)
+                or (same_type and similarity >= 0.78)
+                or (asset_overlap and similarity >= 0.88)
+            ):
                 union(int(left["id"]), int(right["id"]))
 
     groups = {}

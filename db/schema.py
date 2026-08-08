@@ -31,6 +31,8 @@ _COMPATIBLE_COLUMNS = {
         "processing_error": "TEXT DEFAULT ''",
         "processing_attempts": "INTEGER DEFAULT 0",
         "processing_updated_at": "TIMESTAMP",
+        "canonical_url": "TEXT DEFAULT ''",
+        "title_fingerprint": "TEXT DEFAULT ''",
     },
     "ai_analyses": {
         "prompt_version": "TEXT DEFAULT ''",
@@ -43,6 +45,8 @@ _COMPATIBLE_COLUMNS = {
         "ai_implications": "TEXT DEFAULT ''",
         "ai_watch_next": "TEXT DEFAULT ''",
         "ai_updated_at": "TIMESTAMP",
+        "rebuild_token": "TEXT DEFAULT ''",
+        "evidence_fingerprint": "TEXT DEFAULT ''",
     },
     "trade_account_snapshots": {
         "account_mode": "TEXT DEFAULT ''",
@@ -96,6 +100,8 @@ def _ensure_news_cluster_schema(conn):
             ai_implications TEXT DEFAULT '',
             ai_watch_next TEXT DEFAULT '',
             ai_updated_at TIMESTAMP,
+            rebuild_token TEXT DEFAULT '',
+            evidence_fingerprint TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )"""
@@ -103,11 +109,16 @@ def _ensure_news_cluster_schema(conn):
     for column in (
         "merged_into", "ai_status", "ai_title", "ai_summary",
         "ai_implications", "ai_watch_next", "ai_updated_at",
+        "rebuild_token", "evidence_fingerprint",
     ):
         _ensure_column(conn, "news_clusters", column)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_news_clusters_status "
         "ON news_clusters(status, last_seen_at, severity)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_news_clusters_rebuild "
+        "ON news_clusters(status, rebuild_token, last_seen_at)"
     )
 
 
@@ -365,7 +376,9 @@ def init_db():
                 processing_error TEXT DEFAULT '',
                 processing_attempts INTEGER DEFAULT 0,
                 processing_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                raw_json TEXT DEFAULT ''
+                raw_json TEXT DEFAULT '',
+                canonical_url TEXT DEFAULT '',
+                title_fingerprint TEXT DEFAULT ''
             );
 
             -- AI analysis results
@@ -646,6 +659,8 @@ def init_db():
                 ai_implications TEXT DEFAULT '',
                 ai_watch_next TEXT DEFAULT '',
                 ai_updated_at TIMESTAMP,
+                rebuild_token TEXT DEFAULT '',
+                evidence_fingerprint TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -714,6 +729,8 @@ def init_db():
         _ensure_column(conn, "news_articles", "processing_error")
         _ensure_column(conn, "news_articles", "processing_attempts")
         _ensure_column(conn, "news_articles", "processing_updated_at")
+        _ensure_column(conn, "news_articles", "canonical_url")
+        _ensure_column(conn, "news_articles", "title_fingerprint")
         _ensure_column(conn, "ai_analyses", "prompt_version")
         _ensure_column(conn, "news_clusters", "merged_into")
         _ensure_column(conn, "news_clusters", "ai_status")
@@ -722,6 +739,8 @@ def init_db():
         _ensure_column(conn, "news_clusters", "ai_implications")
         _ensure_column(conn, "news_clusters", "ai_watch_next")
         _ensure_column(conn, "news_clusters", "ai_updated_at")
+        _ensure_column(conn, "news_clusters", "rebuild_token")
+        _ensure_column(conn, "news_clusters", "evidence_fingerprint")
         _ensure_column(conn, "trade_account_snapshots", "account_mode")
         _ensure_column(conn, "trade_account_snapshots", "margin_mode")
         _ensure_column(conn, "trade_notes", "trade_type")
@@ -741,6 +760,22 @@ def init_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_news_processing "
             "ON news_articles(processing_status, published_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_articles_identity "
+            "ON news_articles(title_fingerprint, published_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_articles_canonical_url "
+            "ON news_articles(canonical_url)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_article_latest "
+            "ON ai_analyses(article_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_clusters_rebuild "
+            "ON news_clusters(status, rebuild_token, last_seen_at)"
         )
         conn.execute(
             """UPDATE news_articles SET processing_status = 'analyzed'

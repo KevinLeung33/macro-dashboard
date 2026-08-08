@@ -18,16 +18,20 @@ from services.access_control import render_admin_access, require_admin
 
 st.set_page_config(page_title="新闻雷达", page_icon="📡", layout="wide")
 admin_access = render_admin_access()
+try:
+    cluster_warn_article_count = max(5, int(os.getenv("NEWS_CLUSTER_WARN_ARTICLES", "25")))
+except ValueError:
+    cluster_warn_article_count = 25
 st.title("📡 新闻雷达")
 target = render_research_target()
 
 processing = query_news_processing_summary()
 status_labels = {
     "fetched": "已抓取", "queued": "待分析", "analyzing": "分析中",
-    "analyzed": "已分析", "clustered": "已聚类", "failed": "失败",
+    "analyzed": "已分析", "clustered": "已聚类", "deduplicated": "去重跳过", "failed": "失败",
 }
-status_cols = st.columns(6)
-for index, status in enumerate(("fetched", "queued", "analyzing", "analyzed", "clustered", "failed")):
+status_cols = st.columns(7)
+for index, status in enumerate(("fetched", "queued", "analyzing", "analyzed", "clustered", "deduplicated", "failed")):
     with status_cols[index]:
         st.metric(status_labels[status], processing["counts"].get(status, 0))
 
@@ -61,7 +65,7 @@ tab0, tab1, tab2, tab3 = st.tabs(["🧩 事件流", "🧠 AI 分析", "📈 AI�
 with tab0:
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
     with c1:
-        st.caption("事件流把多篇相似新闻合并成同一宏观事件，减少重复报道噪音。")
+        st.caption("事件流按具体事实合并多篇报道；同主题但事实不同的新闻会保留为独立事件。")
     with c2:
         min_cluster_sev = st.selectbox("最低严重度", [1, 2, 3, 4], index=2)
     with c3:
@@ -70,8 +74,14 @@ with tab0:
                 result = build_news_clusters(days=3)
             st.success(
                 f"事件流完成：{result['articles']}篇文章 → {result['clusters']}个规则事件，"
-                f"合并 {result.get('merged', 0)} 个重复事件，生成 {result.get('ai_conclusions', 0)} 条统一结论"
+                f"退休 {result.get('retired', 0)} 个旧事件，合并 {result.get('merged', 0)} 个重复事件，"
+                f"生成 {result.get('ai_conclusions', 0)} 条统一结论"
             )
+            if result.get("truncated"):
+                st.warning(
+                    f"最近 {result.get('total_articles', result['articles'])} 篇已分析文章超过本轮处理上限；"
+                    "为避免误隐藏旧事件，本轮没有回收旧簇。可提高 NEWS_CLUSTER_MAX_ARTICLES 后重建。"
+                )
     with c4:
         if st.button("刷新研究关联", use_container_width=True, disabled=not admin_access) and require_admin("刷新研究关联"):
             result = refresh_news_research_links()
@@ -95,9 +105,12 @@ with tab0:
             st.markdown(f"**{sev_icon} {label} · {row['article_count']}篇 · {display_title}**")
             st.caption(
                 f"{row['first_seen_at'] or '—'} → {row['last_seen_at'] or '—'} | "
-                f"来源 {row['primary_source'] or '—'} | 资产 {row['assets_impacted'] or '—'} | "
+                f"来源 {row['primary_source'] or '—'}（{row['source_count'] or 0}个来源） | "
+                f"资产 {row['assets_impacted'] or '—'} | "
                 f"置信 {row['confidence']:.0%}"
             )
+            if int(row["article_count"] or 0) > cluster_warn_article_count:
+                st.caption("⚠️ 该事件证据数量异常偏大，建议展开相关文章核验是否需要拆分。")
             if display_summary:
                 if row["ai_summary"]:
                     st.caption("AI 事件结论")
@@ -276,7 +289,7 @@ with tab3:
         filtered = [r for r in raw_rows if not tf or r["topic"] in tf]
         st.caption(f"共 {len(raw_rows)} 篇，筛选后 {len(filtered)} 篇")
         for r in filtered:
-            status_icon = {"fetched": "📥", "queued": "⏳", "analyzing": "🧠", "analyzed": "✅", "clustered": "🧩", "failed": "🔴"}
+            status_icon = {"fetched": "📥", "queued": "⏳", "analyzing": "🧠", "analyzed": "✅", "clustered": "🧩", "deduplicated": "🧹", "failed": "🔴"}
             badge = status_icon.get(r["processing_status"], "⚪")
             tt = f"`{r['topic']}`" if r["topic"] else ""
             link = f"[🔗]({r['url']})" if r["url"] else ""

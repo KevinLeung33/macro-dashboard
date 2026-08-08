@@ -19,6 +19,7 @@ from services.signal_review import save_signal_snapshots
 from services.time_utils import app_now
 from utils.alerts import check_alerts
 from utils.indicators import compute_zscores
+from config.data_sources import source_config, source_is_configured
 
 
 WATCH_SERIES = [
@@ -96,6 +97,10 @@ def get_data_health():
     rows = []
     now = app_now().replace(tzinfo=None)
     for _, row in df.iterrows():
+        source = _nullable(row.get("source")) or "unknown"
+        config = source_config(source)
+        enabled = bool(config.get("enabled", True)) if config else True
+        configured = source_is_configured(source)
         fetched_at = _nullable(row.get("latest_fetched_at"))
         age_hours = None
         if fetched_at:
@@ -105,7 +110,11 @@ def get_data_health():
             except ValueError:
                 age_hours = None
 
-        if age_hours is None:
+        if not enabled:
+            status = "disabled"
+        elif not configured:
+            status = "unavailable"
+        elif age_hours is None:
             status = "unknown"
         elif age_hours <= 24:
             status = "fresh"
@@ -115,13 +124,15 @@ def get_data_health():
             status = "old"
 
         last_status = str(_nullable(row.get("last_status", "")) or "").lower()
-        if last_status == "error":
+        if enabled and last_status == "error":
             status = "error"
-        elif last_status == "skipped":
+        elif enabled and last_status == "skipped":
             status = "unavailable"
 
         rows.append({
-            "source": _nullable(row.get("source")) or "unknown",
+            "source": source,
+            "enabled": enabled,
+            "configured": configured,
             "series_count": _health_int(row.get("series_count")),
             "quality_issue_count": _health_int(row.get("quality_issue_count")),
             "latest_data_date": _nullable(row.get("latest_data_date")),

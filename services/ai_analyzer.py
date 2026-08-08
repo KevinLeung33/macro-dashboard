@@ -155,7 +155,7 @@ def run_analysis_pipeline(limit=15):
         follow = ",".join(result.get("follow_up_data", []))
 
         try:
-            insert_ai_analysis(
+            inserted = insert_ai_analysis(
                 article_id=art["id"], model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
                 summary_cn=result.get("summary_cn", ""),
                 event_type=result.get("event_type", "other"),
@@ -179,7 +179,10 @@ def run_analysis_pipeline(limit=15):
             continue
         mark_article_analyzed(art["id"])
         recent_fps.add(fp)
-        analyzed += 1
+        if inserted:
+            analyzed += 1
+        else:
+            logger.info("Skipped duplicate AI persistence for article=%s", art["id"])
 
     logger.info(f"AI analyzed {analyzed}/{len(articles)} articles")
     if failed:

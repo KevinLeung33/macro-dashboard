@@ -92,7 +92,7 @@ python -c "from data.pipeline import fetch_all; fetch_all(incremental=True)"
 - `crypto_liquidity`：DefiLlama 稳定币数据，Kraken/Coinbase ETH/BTC。
 - `crypto_market`：Binance 公共接口的 BTC 资金费率和持仓量历史。
 - `crypto_flows`：可选配置的 BTC ETF flows 和交易所净流入 CSV/JSON 适配器。
-- `news`：官方/媒体 RSS（含 BLS、SEC、EIA、吴说）和可选 Alpha Vantage 新闻源；RSS 原文快速刷新，AI 分析单独低频运行。
+- `news`：官方/媒体 RSS（含 BLS、SEC、EIA、吴说）；RSS 原文快速刷新，AI 分析单独低频运行。Alpha Vantage 新闻默认关闭，避免免费 Key 的 25 次/日额度被定时任务耗尽。
 
 Crypto 内生流动性目前包括：
 
@@ -213,14 +213,14 @@ AI 日报会读取：
 
 ## 5.2 新闻处理、事件关联与 AI 复盘
 
-新闻文章依次经过 `fetched`、`queued`、`analyzing`、`analyzed`、`clustered` 状态。AI 请求、结构化 JSON 或写库失败会进入 `failed`，新闻雷达会显示失败原因和尝试次数；点击“重试失败文章”后，文章回到 `fetched`，等待下一次新闻分析任务处理。
+新闻文章依次经过 `fetched`、`queued`、`analyzing`、`analyzed`、`clustered` 状态。URL 仅存在跟踪参数差异或近期已经完成 AI 分析的相同标题，会保留在原始文章库中并标记为 `deduplicated`，不会重复消耗 AI 调用额度。AI 请求、结构化 JSON 或写库失败会进入 `failed`，新闻雷达会显示失败原因和尝试次数；点击“重试失败文章”后，文章回到 `fetched`，等待下一次新闻分析任务处理。
 
 事件流会把同类已分析文章聚成事件簇，并根据 AI 的 `follow_up_data`、宏观传导渠道、影响资产和事件主题，关联：
 
 - 需要继续验证的指标。
 - 匹配的活跃研究假设及匹配理由。
 
-事件簇有自己的生命周期：当前窗口内的事件为 `active`，超过重建窗口的事件会变为 `inactive`；被判定为同一具体事件的旧记录会变为 `merged`，并通过 `merged_into` 保留合并去向。重建事件流时会先清理当前文章的旧簇关联，再重新写入，因此同一篇文章不会长期同时出现在多个活动事件下。
+事件簇有自己的生命周期：当前窗口内的事件为 `active`，超过重建窗口的事件会变为 `inactive`；被判定为同一具体事件的旧记录会变为 `merged`，并通过 `merged_into` 保留合并去向。重建事件流时会以本轮文章分配为准：成功且未超出处理上限时，本轮没有重新生成的旧活动簇会退出主事件流，因此不会因历史重建结果残留而重复展示。原始文章和历史关联不会被删除。
 
 规则聚类完成后，系统会为高相似候选簇调用一次事件级 AI：模型需要区分“同一具体事件的多家报道”和“只是同一宏观主题的不同事件”。确认合并后，事件流只展示一个活动事件，并保存一条统一的标题、结论、影响解读和下一步观察。AI 不可用时，完全相同或高度相似的候选标题仍会使用规则兜底合并，不会因为 AI 故障阻塞新闻入库。
 
@@ -229,9 +229,21 @@ AI 日报会读取：
 ```dotenv
 AI_NEWS_CLUSTER_MERGE_ENABLED=true
 AI_NEWS_CLUSTER_MAX_TOKENS=1600
+NEWS_CLUSTER_MAX_ARTICLES=1000
+NEWS_CLUSTER_EVENT_MAX_HOURS=96
+NEWS_CLUSTER_MATCH_THRESHOLD=3.0
+NEWS_CLUSTER_WARN_ARTICLES=25
+NEWS_ANALYSIS_DEDUP_DAYS=3
 ```
 
-部署新版本后，打开“新闻雷达”并以管理员身份点击一次“重建事件流”，即可整理最近 3 天的历史事件。之后新闻分析流水线会在每轮分析后自动执行同样的生命周期整理和事件级合并。
+聚类不会仅因为“同为 `other`、同一资产或 48 小时内”而合并；必须存在共享标题实体或足够语义重合。部署新版本后，打开“新闻雷达”并以管理员身份点击一次“重建事件流”，即可整理最近 3 天的历史事件。若提示文章数超过 `NEWS_CLUSTER_MAX_ARTICLES`，先调高该值后再重建，避免在输入不完整时隐藏旧事件。之后新闻分析流水线会在每轮分析后自动执行同样的生命周期整理和事件级合并。
+
+也可以在服务器上用下面的只处理最近 3 天事件流的命令完成首次整理；它会把未在本轮重建中出现的旧活动簇标记为 `inactive`，不会删除原始文章：
+
+```bash
+source .venv/bin/activate
+python -c "from db.schema import init_db; from services.news_clusterer import build_news_clusters; init_db(); print(build_news_clusters(days=3))"
+```
 
 新闻雷达的“AI复盘”页会按新闻发布时间或分析创建日期作为起点，记录明确 `bullish` / `bearish` 判断对应资产后续 1/3/7/30 个交易日的表现。统计按模型、Prompt 版本、新闻源、事件类型和资产拆分；样本不足时不显示方向准确率，避免把少量结果当成结论。
 
@@ -509,15 +521,26 @@ P1 新增数据源依赖外部接口，部署后先执行一次手动刷新，�
 
 这些验收需要在服务器的真实依赖、网络和供应商数据环境中完成，不能仅用本地 AST 检查替代。
 
+### 9.4 候选数据源只读探测
+
+在把候选源写入 `RSS_FEEDS` 或正式数据管道之前，先在服务器执行：
+
+```bash
+source .venv/bin/activate
+python probe_candidate_sources.py
+```
+
+脚本不会写数据库、不会修改 `.env`、不会调用 AI。它会复测当前失败的 BLS、Reuters、Caixin、The Block 路径，测试国家统计局和 ECB 的官方 RSS，并测试 BLS API、AKShare 的替代宏观接口；如在 `.env` 临时配置 `FINNHUB_API_KEY` 或 `TUSHARE_TOKEN`，还会各发起一次最小 API 请求。将完整输出保存或发回后，再决定接入、保留为备用，还是放弃该源。
+
 `NOTIFY_CHANNELS` 支持 `telegram,lark,email,webhook`，并会自动忽略逗号两侧空格。服务器任务失败和运行告警读取这里的渠道配置；网页“通知规则”中的渠道主要用于紧急新闻推送。Alpha Vantage 新闻和行情使用同一个 `ALPHA_VANTAGE_KEY`；不再读取 `FINNHUB_API_KEY`。
 
 当任务重试耗尽后，若 `NOTIFY_ON_TASK_FAILURE=true`，系统会通过 `NOTIFY_CHANNELS` 配置的 Telegram、飞书、Email 或 Webhook 渠道发送失败通知。通知发送本身不会阻塞任务状态记录；即使通知渠道不可用，也可以在 `runtime/task_status.json` 和日志中查看失败原因。
 
 对于“任务没有失败、但内部发生了可恢复异常”的情况，例如 AI 日报接口失败后自动生成规则版日报，系统会在 `NOTIFY_ON_RUNTIME_ERROR=true` 时发送“宏观看板运行告警”。日报和新闻分析会包含具体错误摘要以及已经采取的回退动作；同一个错误默认在 `RUNTIME_ERROR_NOTIFY_COOLDOWN_SECONDS=900` 秒内只推送一次，避免接口连续超时造成通知刷屏。服务器更新代码后需要重启 `macro-dashboard-server`，使 systemd 重新加载代码和 `.env`。
 
-### 9.6 cpolar 与看板可用性监控
+### 9.5 cpolar 与看板可用性监控
 
-服务器会每 5 分钟执行一次 P0/P1/P2 健康检查：P0 检查本机 Streamlit、FastAPI 和 cpolar 公网 URL；P1 检查定时任务新鲜度、数据源/RSS 状态、SQLite 完整性和磁盘空间；P2 检查数据库备份新鲜度与完整性、新闻 AI 失败堆积和通知渠道投递状态。状态变化时才发送告警，避免重复刷屏；恢复后会发送恢复通知。
+服务器会每 5 分钟执行一次 P0/P1/P2 健康检查：P0 检查本机 Streamlit、FastAPI 和 cpolar 公网 URL；P1 检查定时任务新鲜度、数据源/RSS 状态、SQLite 完整性和磁盘空间；P2 检查数据库备份新鲜度与完整性、新闻 AI 失败堆积和通知渠道投递状态。已停用的备用源和未配置的可选源不会升级成严重告警；只有 `HEALTH_CRITICAL_DATA_SOURCES` 中、且没有新鲜有效数据的源才会升级。健康状态会写入运行目录，服务重启后同一问题不会重新推送；状态变化或恢复时才发送告警。
 
 在服务器 `.env` 中配置 cpolar 为 8501 隧道生成的公网 URL，并启用飞书通知：
 
@@ -536,6 +559,7 @@ HEALTH_STARTUP_GRACE_MINUTES=10
 HEALTH_DATA_MAX_AGE_SECONDS=43200
 HEALTH_NEWS_MAX_AGE_SECONDS=10800
 HEALTH_DATA_SOURCE_MAX_AGE_SECONDS=43200
+HEALTH_CRITICAL_DATA_SOURCES=fred,crypto_liquidity,crypto_market
 HEALTH_RSS_SOURCE_MAX_AGE_SECONDS=21600
 HEALTH_MIN_FREE_BYTES=524288000
 HEALTH_MIN_FREE_PERCENT=10
@@ -547,7 +571,7 @@ HEALTH_NOTIFICATION_STATUS_MAX_AGE_SECONDS=86400
 
 如果没有配置 `CPOLAR_PUBLIC_URL`，系统只能检查本机 8501，无法确认 cpolar 隧道状态。修改 `.env` 后重启 `macro-dashboard-server`。
 
-### 9.7 OKX 只读交易看板
+### 9.6 OKX 只读交易看板
 
 在服务器 `.env` 中配置 OKX API，但在 OKX 后台只勾选 `Read` 权限，并设置 IP 白名单；不要开启 Trade 或 Withdraw，也不要把密钥写入数据库、日志或 Git：
 
@@ -565,7 +589,7 @@ OKX_SYNC_LIMIT=100
 
 `OKX_REQUIRED_ACCOUNT_LEVEL=3` 对应 OKX 的 Multi-currency margin。交易复盘页的“同步 OKX 账户”只调用只读接口，写入账户快照、当前非零持仓、挂单/历史订单和成交；“刷新 K 线”读取公开行情，并在图上标记已同步成交。页面不提供下单、撤单或资金操作。
 
-### 9.8 交易计划环境反馈
+### 9.7 交易计划环境反馈
 
 交易复盘页的“创建交易计划”会记录交易类型、预期持仓周期、宏观判断周期、技术周期、入场触发、价格止损、时间止损和计划到期时间。保存时，系统会生成一份不可自动覆盖的基础快照，内容包括：本地宏观组合信号、相关 AI 新闻、数据源新鲜度，以及 OKX 公开 K 线（网络不可用时会记录缺口而不会阻止保存）。
 
@@ -579,7 +603,7 @@ AI_TRADE_PLAN_MAX_TOKENS=2600
 
 点击“生成 AI 交易点评”时，系统会将原计划、计划环境反馈、实际订单/成交和当前 K 线摘要一起交给 AI，用于比较计划、执行与结果。所有 OKX 操作仍然只读；页面不提供下单、撤单或资金操作。
 
-### 9.4 飞书日报卡片与故障告警
+### 9.8 飞书日报卡片与故障告警
 
 在飞书群中添加“自定义机器人”，复制 Webhook 地址后写入服务器 `.env`：
 
@@ -594,7 +618,7 @@ DASHBOARD_PUBLIC_URL=https://你的看板域名
 
 Webhook 地址和签名密钥与 API Token 一样属于敏感配置，只保存在服务器 `.env`，不要提交到仓库。飞书自定义机器人支持交互式卡片；若开启签名校验，程序会按飞书要求附带时间戳和 HMAC-SHA256 签名。
 
-### 9.5 紧急新闻推送规则
+### 9.9 紧急新闻推送规则
 
 日报用于汇总，紧急推送用于及时提醒。新闻抓取后会经过 AI 分析和事件聚类；只有首次出现的事件簇满足以下条件时才推送，避免同一事件被多家媒体重复报道时反复打扰：
 
