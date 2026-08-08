@@ -257,6 +257,10 @@ AKSHARE_SERIES = {
     },
     "CN_CAIXIN_PMI": {
         "display_name": "🇨🇳 中国财新制造业PMI", "unit": "", "category": "global_cycle",
+        # Jin10's current response stopped in 2025-09 on the production host.
+        # Do not present an almost-year-old PMI as a live macro signal.
+        "enabled": False,
+        "disabled_reason": "当前 Jin10 财新 PMI 数据停在 2025-09，等待可验证的新鲜来源",
         "fetch_func": "macro_china_cx_pmi_yearly", "post_process": "event_current", "valid_range": (20, 80),
     },
     "CN_LPR_1Y": {
@@ -265,6 +269,11 @@ AKSHARE_SERIES = {
     },
     "CN_SOCIAL_FINANCING": {
         "display_name": "🇨🇳 中国社融增量", "unit": "亿元", "category": "global_cycle",
+        # The public MOFCOM-backed table returned only through 2026-04 in the
+        # production probe.  Hide it until a fresh, semantically compatible
+        # provider is verified (Tushare sf_month is an optional candidate).
+        "enabled": False,
+        "disabled_reason": "当前公开接口最新仅到 2026-04，等待验证替代源",
         "fetch_func": "macro_china_shrzgm", "post_process": "second_col",
     },
     "CN_CPI": {
@@ -283,6 +292,10 @@ AKSHARE_SERIES = {
     },
     "CN_M2_YOY": {
         "display_name": "🇨🇳 中国M2同比", "unit": "%", "category": "china_liquidity",
+        # Jin10's M2 event feed is stale in production.  The free Sina table
+        # is being schema-validated before it replaces this mapping.
+        "enabled": False,
+        "disabled_reason": "当前 Jin10 M2 数据停在 2025-08，等待验证 Sina/Tushare 替代源",
         "fetch_func": "macro_china_m2_yearly", "post_process": "event_current",
         "valid_range": (0, 50),
     },
@@ -299,6 +312,10 @@ AKSHARE_SERIES = {
         # repo_rate_hist returns FDR007, the fixing rate calculated from DR007
         # transactions; label it precisely instead of conflating the two.
         "display_name": "🇨🇳 FDR007（DR007定盘）", "unit": "%", "category": "china_liquidity",
+        # The ChinaMoney response currently omits frValueMap even after three
+        # retries.  Avoid charting a stale historical fixing as a live rate.
+        "enabled": False,
+        "disabled_reason": "当前 ChinaMoney 回购定盘接口连续返回 frValueMap 缺失",
         "fetch_func": "repo_rate_hist", "post_process": "repo_fdr007",
         "fetch_window_days": 365,
         "retry_attempts": 3,

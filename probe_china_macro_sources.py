@@ -12,13 +12,21 @@ the expected range, and reports the newest usable observation for each series.
 from __future__ import annotations
 
 import math
+import os
 import re
 import sys
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # The primary probe works without optional .env loading.
+    load_dotenv = None
 
 
 def _pick_column(columns, keywords, fallback=0):
@@ -136,7 +144,120 @@ def _probe(
     return False
 
 
+def _tushare_frame(api_name: str, token: str, params=None, fields: str = ""):
+    """Call one Tushare endpoint without importing its optional SDK."""
+    response = requests.post(
+        "https://api.tushare.pro",
+        json={
+            "api_name": api_name,
+            "token": token,
+            "params": params or {},
+            "fields": fields,
+        },
+        timeout=20,
+    )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"HTTP {response.status_code}; non-JSON response") from exc
+    if not response.ok or payload.get("code") != 0:
+        raise RuntimeError(
+            f"HTTP {response.status_code}; code={payload.get('code')}; "
+            f"msg={str(payload.get('msg') or '')[:180]}"
+        )
+    data = payload.get("data") or {}
+    columns = data.get("fields") or []
+    items = data.get("items") or []
+    if not columns or not items:
+        raise ValueError("empty rows or fields")
+    return pd.DataFrame(items, columns=columns)
+
+
+def _shift_month(date_text: str, months: int) -> str:
+    observed = datetime.strptime(date_text, "%Y-%m-%d")
+    month_index = observed.year * 12 + observed.month - 1 + months
+    year, month_zero_based = divmod(month_index, 12)
+    return f"{year:04d}-{month_zero_based + 1:02d}-{observed.day:02d}"
+
+
+def _probe_optional_tushare():
+    """Test paid/points-gated exact fallbacks only when a token is configured."""
+    token = os.getenv("TUSHARE_TOKEN", "").strip()
+    print("\n=== Tushare exact China macro fallbacks (optional token) ===")
+    if not token:
+        print("SKIP  | Tushare cn_m / sf_month / repo_daily | set TUSHARE_TOKEN in .env to test; token is never printed")
+        return
+
+    def report_frame(label, api_name, *, params, date_keywords, value_keywords, valid_range, max_age_days):
+        started = time.monotonic()
+        try:
+            frame = _tushare_frame(api_name, token, params=params)
+            pairs, date_col, value_col = _usable_pairs(
+                frame, date_keywords, value_keywords, valid_range
+            )
+            if not pairs:
+                raise ValueError(f"no finite in-range rows; cols={list(frame.columns)!r}")
+            latest_date, latest_value = pairs[-1]
+            age_days = (date.today() - datetime.strptime(latest_date, "%Y-%m-%d").date()).days
+            status = "PASS" if age_days <= max_age_days else "STALE"
+            print(
+                f"{status:<5} | {label:<32} | rows={len(pairs)}, "
+                f"latest={latest_date} value={latest_value:g}, age={age_days}d, "
+                f"columns=({date_col}, {value_col}), {time.monotonic() - started:.1f}s"
+            )
+            return frame, pairs
+        except Exception as exc:
+            print(f"FAIL  | {label:<32} | {type(exc).__name__}: {str(exc)[:240]}")
+            return None, []
+
+    report_frame(
+        "Tushare M2 YoY (cn_m)",
+        "cn_m",
+        params={},
+        date_keywords=["month"],
+        value_keywords=["m2_yoy"],
+        valid_range=(0, 50),
+        max_age_days=75,
+    )
+    social_frame, social_pairs = report_frame(
+        "Tushare social-finance stock",
+        "sf_month",
+        params={},
+        date_keywords=["month"],
+        value_keywords=["stk_endval"],
+        valid_range=(0, 10000),
+        max_age_days=75,
+    )
+    if social_frame is not None and social_pairs:
+        stock_by_month = dict(social_pairs)
+        latest_date, latest_stock = social_pairs[-1]
+        base_stock = stock_by_month.get(_shift_month(latest_date, -12))
+        if base_stock and base_stock > 0:
+            print(
+                f"INFO  | Tushare social-finance stock YoY | latest={latest_date}, "
+                f"computed_yoy={(latest_stock / base_stock - 1) * 100:.2f}%"
+            )
+        else:
+            print("WARN  | Tushare social-finance stock YoY | needs a matching observation 12 months earlier")
+    end_date = date.today()
+    report_frame(
+        "Tushare DR007 (repo_daily)",
+        "repo_daily",
+        params={
+            "ts_code": "DR007.IB",
+            "start_date": (end_date - timedelta(days=365)).strftime("%Y%m%d"),
+            "end_date": end_date.strftime("%Y%m%d"),
+        },
+        date_keywords=["trade_date"],
+        value_keywords=["weight", "close"],
+        valid_range=(0, 20),
+        max_age_days=10,
+    )
+
+
 def main() -> int:
+    if load_dotenv is not None:
+        load_dotenv(dotenv_path=Path.cwd() / ".env")
     try:
         import akshare as ak
     except ImportError:
@@ -188,7 +309,10 @@ def main() -> int:
             "label": "M2 YoY (Sina candidate)",
             "function_name": "macro_china_supply_of_money",
             "date_keywords": ["统计时间", "月份", "日期", "时间"],
-            "value_keywords": ["货币和准货币", "m2"],
+            # The table contains both the M2 *level* and M2 YoY.  Prefer the
+            # precise YoY header; the old broad match incorrectly chose the
+            # level and rejected it against a percentage range.
+            "value_keywords": ["货币和准货币（广义货币M2）同比增长", "m2同比", "同比增长"],
             "valid_range": (0, 50),
             "max_age_days": 75,
         },
@@ -230,6 +354,7 @@ def main() -> int:
     print("-" * 118)
     print(f"SUMMARY | fresh and schema-valid: {passed}/{len(checks)}")
     print("Note: STALE means the endpoint returned structurally valid data, but its newest observation is older than the expected release window.")
+    _probe_optional_tushare()
     # A source failure is diagnostic information, not a failed maintenance task.
     return 0
 

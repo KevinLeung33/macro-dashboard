@@ -1,6 +1,8 @@
 import streamlit as st
 import logging
+import pandas as pd
 
+from config.series_definitions import AKSHARE_SERIES
 from db.repository import query_series, query_events, add_event
 from services.market_data import query_market_series
 from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
@@ -17,6 +19,11 @@ logger = logging.getLogger(__name__)
 target = render_research_target()
 render_chart_controls()
 def _q(source, series_id): return apply_target_window(query_series(source, series_id), target)
+def _ak_series(series_id):
+    """Never surface a deliberately disabled, stale China macro series."""
+    if not AKSHARE_SERIES.get(series_id, {}).get("enabled", True):
+        return pd.DataFrame(columns=["date", "value"])
+    return _q("akshare", series_id)
 def _market(series_id):
     frame, meta = query_market_series(series_id)
     return apply_target_window(frame, target), meta
@@ -26,10 +33,10 @@ def _show(fig,note=""):
 
 # China
 st.subheader("🇨🇳 中国宏观周期")
-cn_pmi=_q("akshare","CN_PMI"); cn_cx=_q("akshare","CN_CAIXIN_PMI")
-cn_cpi=_q("akshare","CN_CPI"); cn_ppi=_q("akshare","CN_PPI")
-cn_m2=_q("akshare","CN_M2_YOY")
-cn_dr007=_q("akshare","CN_DR007")
+cn_pmi=_ak_series("CN_PMI"); cn_cx=_ak_series("CN_CAIXIN_PMI")
+cn_cpi=_ak_series("CN_CPI"); cn_ppi=_ak_series("CN_PPI")
+cn_m2=_ak_series("CN_M2_YOY")
+cn_dr007=_ak_series("CN_DR007")
 usdcnh=_q("yfinance","USDCNH=X")
 usdcny=_q("yfinance","USDCNY=X")
 csi300=_q("yfinance","000300.SS")
@@ -52,7 +59,7 @@ if any(not df.empty for df in (cn_pmi, cn_cx, cn_cpi, cn_ppi, cn_m2, cn_dr007)):
                   "📖 CPI<0=通缩→消费需求不足。PPI<0=工业品降价→企业利润承压。CPI-PPI剪刀差扩大=下游利润改善。")
     c,d=st.columns(2)
     with c:
-        sf=_q("akshare","CN_SOCIAL_FINANCING")
+        sf=_ak_series("CN_SOCIAL_FINANCING")
         if not sf.empty:
             _show(add_range_selector(line_chart(sf,"社融增量(亿元)","亿元",color="#1f77b4",height=350)),
                   "📖 社融=实体经济从金融体系获得的资金总量，含贷款+债券+股票+表外。是GDP的领先指标(约6个月)。")
@@ -72,6 +79,15 @@ if any(not df.empty for df in (cn_pmi, cn_cx, cn_cpi, cn_ppi, cn_m2, cn_dr007)):
         if not cn_dr007.empty:
             _show(add_range_selector(line_chart(cn_dr007,"FDR007（DR007定盘）","%",color="#9467bd")),
                   "📖 FDR007是按DR007成交计算的7天回购定盘利率，可用于观察银行间短端资金价格。")
+    paused = [
+        meta.get("display_name", series_id).replace("🇨🇳 ", "")
+        for series_id, meta in AKSHARE_SERIES.items()
+        if not meta.get("enabled", True) and series_id in {
+            "CN_CAIXIN_PMI", "CN_SOCIAL_FINANCING", "CN_M2_YOY", "CN_DR007"
+        }
+    ]
+    if paused:
+        st.info("数据质量保护：" + "、".join(paused) + " 当前源已过期或不可用，暂不纳入实时宏观判断。")
 else:
     st.warning("中国PMI数据未拉取。请先 pip install akshare 并点击主页刷新。")
 

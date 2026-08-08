@@ -39,7 +39,6 @@ WATCH_SERIES = [
     ("crypto_liquidity", "STABLE_MAJOR_MCAP", "USDT+USDC市值", "美元"),
     ("crypto_liquidity", "ETHBTC", "ETH/BTC", ""),
     ("akshare", "CN_PMI", "中国PMI", ""),
-    ("akshare", "CN_CAIXIN_PMI", "财新PMI", ""),
 ]
 
 

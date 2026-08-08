@@ -545,6 +545,10 @@ python probe_china_macro_sources.py
 
 它会检查 CPI/PPI 同比列、M2 候选表、社融增量和 FDR007 的实际列名、可用数值与最新日期；不会写数据库、不会刷新看板。只有逻辑指标、字段含义和服务器实测均通过后，才将候选源接入正式抓取器。
 
+如果探测显示某个实时宏观序列已经超过预期发布窗口，页面会先暂停展示该序列，而不是把历史值伪装成当前信号。当前 CPI/PPI 已通过生产探测；财新 PMI、社融增量、M2 同比和 FDR007 需验证新鲜来源后才会恢复。
+
+如需把中国流动性数据提高到更高稳定性，可在 `.env` 配置只读的 `TUSHARE_TOKEN` 后重跑探测。`cn_m` 可提供 M2 同比；`sf_month` 提供社融存量水平（系统可据连续月度值计算同比）；`repo_daily` 可直接返回 `DR007.IB`。这些接口有积分门槛，探测会如实报告权限不足，不会输出 Token 或写入数据库。
+
 当任务重试耗尽后，若 `NOTIFY_ON_TASK_FAILURE=true`，系统会通过 `NOTIFY_CHANNELS` 配置的 Telegram、飞书、Email 或 Webhook 渠道发送失败通知。通知发送本身不会阻塞任务状态记录；即使通知渠道不可用，也可以在 `runtime/task_status.json` 和日志中查看失败原因。
 
 对于“任务没有失败、但内部发生了可恢复异常”的情况，例如 AI 日报接口失败后自动生成规则版日报，系统会在 `NOTIFY_ON_RUNTIME_ERROR=true` 时发送“宏观看板运行告警”。日报和新闻分析会包含具体错误摘要以及已经采取的回退动作；同一个错误默认在 `RUNTIME_ERROR_NOTIFY_COOLDOWN_SECONDS=900` 秒内只推送一次，避免接口连续超时造成通知刷屏。服务器更新代码后需要重启 `macro-dashboard-server`，使 systemd 重新加载代码和 `.env`。
