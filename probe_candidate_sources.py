@@ -22,7 +22,6 @@ import os
 import sys
 import time
 import xml.etree.ElementTree as ET
-from datetime import date, timedelta
 from pathlib import Path
 
 import requests
@@ -191,21 +190,11 @@ def _probe_akshare():
         return
 
     _format_result("INFO", "AKShare version", _version("akshare"))
-    end_date = date.today()
-    start_date = end_date - timedelta(days=30)
     candidates = [
         ("AKShare current PMI (Eastmoney)", "macro_china_pmi", {}),
         ("AKShare PMI candidate (Jin10)", "macro_china_pmi_yearly", {}),
         ("AKShare Caixin PMI", "macro_china_cx_pmi_yearly", {}),
         ("AKShare M2 yearly", "macro_china_m2_yearly", {}),
-        (
-            "AKShare DR007 / ChinaMoney",
-            "repo_rate_hist",
-            {
-                "start_date": start_date.strftime("%Y%m%d"),
-                "end_date": end_date.strftime("%Y%m%d"),
-            },
-        ),
     ]
     for label, function_name, kwargs in candidates:
         func = getattr(ak, function_name, None)

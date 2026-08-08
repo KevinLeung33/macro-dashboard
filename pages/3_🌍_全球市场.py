@@ -36,14 +36,13 @@ st.subheader("🇨🇳 中国宏观周期")
 cn_pmi=_ak_series("CN_PMI"); cn_cx=_ak_series("CN_CAIXIN_PMI")
 cn_cpi=_ak_series("CN_CPI"); cn_ppi=_ak_series("CN_PPI")
 cn_m2=_ak_series("CN_M2_YOY")
-cn_dr007=_ak_series("CN_DR007")
 usdcnh=_q("yfinance","USDCNH=X")
 usdcny=_q("yfinance","USDCNY=X")
 csi300=_q("yfinance","000300.SS")
 chinext=_q("yfinance","399006.SZ")
 hstech=_q("yfinance","^HSTECH")
 
-if any(not df.empty for df in (cn_pmi, cn_cx, cn_cpi, cn_ppi, cn_m2, cn_dr007)):
+if any(not df.empty for df in (cn_pmi, cn_cx, cn_cpi, cn_ppi, cn_m2)):
     a,b=st.columns(2)
     with a:
         if not cn_pmi.empty:
@@ -68,22 +67,16 @@ if any(not df.empty for df in (cn_pmi, cn_cx, cn_cpi, cn_ppi, cn_m2, cn_dr007)):
         if not lpr.empty:
             _show(add_range_selector(line_chart(lpr,"LPR 1年期","%",color="#d62728",height=350)),
                   "📖 LPR=中国实际政策利率。下降=降息刺激经济，上升=收紧。当前持续下行→宽松信号。")
-    c,d=st.columns(2)
-    with c:
-        liquidity={}
-        if not cn_m2.empty: liquidity["M2同比"]=cn_m2
-        if liquidity:
-            _show(add_range_selector(multi_line_chart(liquidity,"中国货币供给","%")),
-                  "📖 M2反映广义货币供给。社融存量同比当前没有经过字段校验的公开源，暂不展示，避免把社融增量误当同比。")
-    with d:
-        if not cn_dr007.empty:
-            _show(add_range_selector(line_chart(cn_dr007,"FDR007（DR007定盘）","%",color="#9467bd")),
-                  "📖 FDR007是按DR007成交计算的7天回购定盘利率，可用于观察银行间短端资金价格。")
+    liquidity={}
+    if not cn_m2.empty: liquidity["M2同比"]=cn_m2
+    if liquidity:
+        _show(add_range_selector(multi_line_chart(liquidity,"中国货币供给","%")),
+              "📖 M2反映广义货币供给。社融存量同比当前没有经过字段校验的公开源，暂不展示，避免把社融增量误当同比。")
     paused = [
         meta.get("display_name", series_id).replace("🇨🇳 ", "")
         for series_id, meta in AKSHARE_SERIES.items()
         if not meta.get("enabled", True) and series_id in {
-            "CN_CAIXIN_PMI", "CN_SOCIAL_FINANCING", "CN_M2_YOY", "CN_DR007"
+            "CN_CAIXIN_PMI", "CN_SOCIAL_FINANCING", "CN_M2_YOY"
         }
     ]
     if paused:

@@ -514,7 +514,7 @@ python -c "from services.maintenance import restore_database; print(restore_data
 P1 新增数据源依赖外部接口，部署后先执行一次手动刷新，再检查页面、抓取日志和数据库中的 `source_url`、`fetched_at`、`release_at`：
 
 - Yahoo Finance：确认 `USDCNH=X`、`USDCNY=X`、`000300.SS`、`399006.SZ`、`^HSTECH` 返回非空数据；部分符号不可用时应记录失败，不影响其他指标。
-- AKShare：确认 CPI/PPI 同比、M2 同比和 FDR007（DR007 定盘）的接口版本及字段名称匹配；社融存量同比在验证到具备该字段的来源前不展示。AKShare 升级后优先查看抓取日志中的字段错误。
+- AKShare：确认 CPI/PPI 同比和 M2 同比的接口版本及字段名称匹配；社融存量同比在验证到具备该字段的来源前不展示。AKShare 升级后优先查看抓取日志中的字段错误。
 - Binance：确认现货 K 线、资金费率和 OI 接口可访问，核对 OI 返回值的单位，并留意公共接口的限频响应。
 - ETF/交易所资金流：在 `.env` 配置 `BTC_ETF_FLOWS_URL`、`BTC_EXCHANGE_NETFLOW_URL` 后，确认返回 CSV/JSON 至少包含 `date` 和 `flow`、`net_flow`、`value` 或 `amount` 字段。
 - 空数据降级：移除可选资金流 URL 或模拟接口失败，确认页面仍可打开，并显示“未配置或暂无数据”。
@@ -543,9 +543,9 @@ source .venv/bin/activate
 python probe_china_macro_sources.py
 ```
 
-它会检查 CPI/PPI 同比列、M2 候选表、社融增量和 FDR007 的实际列名、可用数值与最新日期；不会写数据库、不会刷新看板。只有逻辑指标、字段含义和服务器实测均通过后，才将候选源接入正式抓取器。
+它会检查 CPI/PPI 同比列、M2 候选表和社融增量的实际列名、可用数值与最新日期；不会写数据库、不会刷新看板。只有逻辑指标、字段含义和服务器实测均通过后，才将候选源接入正式抓取器。
 
-如果探测显示某个实时宏观序列已经超过预期发布窗口，页面会先暂停展示该序列，而不是把历史值伪装成当前信号。当前 CPI/PPI 及 Sina M2 同比已通过生产探测；财新 PMI、社融增量和 FDR007 需验证新鲜来源后才会恢复。
+如果探测显示某个实时宏观序列已经超过预期发布窗口，页面会先暂停展示该序列，而不是把历史值伪装成当前信号。当前 CPI/PPI 及 Sina M2 同比已通过生产探测；财新 PMI 和社融增量需验证新鲜来源后才会恢复。FDR007/DR007 暂不在看板和默认探测中使用。
 
 如需把中国流动性数据提高到更高稳定性，可在 `.env` 配置只读的 `TUSHARE_TOKEN` 后重跑探测。`cn_m` 可提供 M2 同比；`sf_month` 提供社融存量水平（系统可据连续月度值计算同比）；`repo_daily` 可直接返回 `DR007.IB`。这些接口有积分门槛，探测会如实报告权限不足，不会输出 Token 或写入数据库。
 

@@ -277,8 +277,6 @@ def main() -> int:
     print("status | candidate                        | result")
     print("-" * 118)
 
-    repo_end = date.today()
-    repo_start = repo_end - timedelta(days=365)
     checks = [
         {
             "label": "CPI YoY (official candidate)",
@@ -338,19 +336,6 @@ def main() -> int:
             "value_keywords": ["今值", "现值"],
             "valid_range": (20, 80),
             "max_age_days": 75,
-        },
-        {
-            "label": "FDR007 (from DR007 trades)",
-            "function_name": "repo_rate_hist",
-            "date_keywords": ["date", "日期"],
-            "value_keywords": ["fdr007"],
-            "valid_range": (0, 20),
-            "max_age_days": 10,
-            "kwargs": {
-                "start_date": repo_start.strftime("%Y%m%d"),
-                "end_date": repo_end.strftime("%Y%m%d"),
-            },
-            "attempts": 3,
         },
     ]
 
