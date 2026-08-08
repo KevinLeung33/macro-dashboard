@@ -1425,15 +1425,21 @@ def upsert_trade_fill(fill):
 
 def insert_trade_note(venue, symbol, order_id="", side="", thesis="", setup="",
                       stop_price=None, target_price=None, expected_horizon="", risk_note="",
-                      market_snapshot=None):
+                      market_snapshot=None, trade_type="swing", macro_horizon="",
+                      analysis_timeframe="", entry_trigger="", time_stop="",
+                      plan_status="planned", plan_expires_at="", context_captured_at=""):
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO trade_notes
                (venue, symbol, order_id, side, thesis, setup, stop_price, target_price,
-                expected_horizon, risk_note, market_snapshot_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                expected_horizon, trade_type, macro_horizon, analysis_timeframe, entry_trigger,
+                time_stop, plan_status, plan_expires_at, context_captured_at, risk_note,
+                market_snapshot_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (venue, symbol, order_id, side, thesis, setup, stop_price, target_price,
-             expected_horizon, risk_note, _json_text(market_snapshot or {})),
+             expected_horizon, trade_type or "swing", macro_horizon or "", analysis_timeframe or "",
+             entry_trigger or "", time_stop or "", plan_status or "planned", plan_expires_at or "",
+             context_captured_at or "", risk_note, _json_text(market_snapshot or {})),
         )
         return cur.lastrowid
 
@@ -1455,6 +1461,56 @@ def query_trade_notes(limit=100, symbol=None):
             ).fetchall()
         return conn.execute(
             "SELECT * FROM trade_notes ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
+def update_trade_note_context(note_id, market_snapshot, context_captured_at=""):
+    """Persist the deterministic environment captured when a plan is created.
+
+    The plan's original snapshot is intentionally kept separate from later AI
+    feedback contexts so a post-trade review can avoid using future data.
+    """
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE trade_notes
+               SET market_snapshot_json = ?, context_captured_at = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (_json_text(market_snapshot or {}), context_captured_at or "", note_id),
+        )
+
+
+def insert_trade_plan_feedback(note_id, model, prompt_version, status, context, feedback,
+                               summary_cn="", plan_classification="", macro_alignment="",
+                               realtime_alignment="", technical_alignment="", risk_flags=None,
+                               data_gaps=None):
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO trade_plan_feedback
+               (note_id, model, prompt_version, status, context_json, feedback_json, summary_cn,
+                plan_classification, macro_alignment, realtime_alignment, technical_alignment,
+                risk_flags, data_gaps)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                note_id, model or "", prompt_version or "", status or "completed",
+                _json_text(context or {}), _json_text(feedback or {}), summary_cn or "",
+                plan_classification or "", macro_alignment or "", realtime_alignment or "",
+                technical_alignment or "", _json_text(risk_flags or []), _json_text(data_gaps or []),
+            ),
+        )
+        return cur.lastrowid
+
+
+def query_trade_plan_feedback(note_id=None, limit=20):
+    with get_db() as conn:
+        if note_id:
+            return conn.execute(
+                """SELECT * FROM trade_plan_feedback WHERE note_id = ?
+                   ORDER BY created_at DESC, id DESC LIMIT ?""",
+                (note_id, limit),
+            ).fetchall()
+        return conn.execute(
+            "SELECT * FROM trade_plan_feedback ORDER BY created_at DESC, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
 

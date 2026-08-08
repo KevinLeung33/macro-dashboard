@@ -7,7 +7,7 @@ import json
 import logging
 import os
 
-from db.repository import get_trade_note, insert_trade_ai_review
+from db.repository import get_trade_note, insert_trade_ai_review, query_trade_plan_feedback
 from services.ai_json import ai_thinking_options, extract_response_content, parse_ai_json
 
 logger = logging.getLogger("trade_review")
@@ -16,7 +16,7 @@ PROMPT_VERSION = "trade-review-v1"
 SYSTEM_PROMPT = """你是一个严格、克制的加密货币交易复盘助手。
 你点评的是已经发生的交易或用户主动提交的交易记录，不负责下单，也不要把
 观点写成确定性的买卖指令。请区分：交易理由是否自洽、执行是否符合计划、
-风险是否被清楚定义、哪些证据缺失。没有足够数据时要明确写
+风险是否被清楚定义、计划环境反馈与实际结果是否一致、哪些证据缺失。没有足够数据时要明确写
 insufficient_data，不要编造行情、新闻或收益。
 
 只返回 JSON，字段必须完整：
@@ -81,6 +81,23 @@ def _note_payload(note, order_context=None, market_context=None):
         payload["executed_order_context"] = order_context
     if market_context:
         payload["market_context"] = market_context
+    plan_feedback = query_trade_plan_feedback(note_id=note["id"], limit=1)
+    if plan_feedback:
+        latest = plan_feedback[0]
+        try:
+            feedback = json.loads(latest["feedback_json"] or "{}")
+        except (TypeError, ValueError):
+            feedback = {}
+        try:
+            feedback_context = json.loads(latest["context_json"] or "{}")
+        except (TypeError, ValueError):
+            feedback_context = {}
+        payload["plan_environment_feedback"] = {
+            "created_at": latest["created_at"],
+            "prompt_version": latest["prompt_version"],
+            "feedback": feedback,
+            "evaluation_context": feedback_context,
+        }
     return payload
 
 

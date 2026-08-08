@@ -48,6 +48,16 @@ _COMPATIBLE_COLUMNS = {
         "account_mode": "TEXT DEFAULT ''",
         "margin_mode": "TEXT DEFAULT 'cross'",
     },
+    "trade_notes": {
+        "trade_type": "TEXT DEFAULT 'swing'",
+        "macro_horizon": "TEXT DEFAULT ''",
+        "analysis_timeframe": "TEXT DEFAULT ''",
+        "entry_trigger": "TEXT DEFAULT ''",
+        "time_stop": "TEXT DEFAULT ''",
+        "plan_status": "TEXT DEFAULT 'planned'",
+        "plan_expires_at": "TEXT DEFAULT ''",
+        "context_captured_at": "TEXT DEFAULT ''",
+    },
 }
 
 
@@ -508,6 +518,14 @@ def init_db():
                 stop_price REAL,
                 target_price REAL,
                 expected_horizon TEXT DEFAULT '',
+                trade_type TEXT DEFAULT 'swing',
+                macro_horizon TEXT DEFAULT '',
+                analysis_timeframe TEXT DEFAULT '',
+                entry_trigger TEXT DEFAULT '',
+                time_stop TEXT DEFAULT '',
+                plan_status TEXT DEFAULT 'planned',
+                plan_expires_at TEXT DEFAULT '',
+                context_captured_at TEXT DEFAULT '',
                 risk_note TEXT DEFAULT '',
                 market_snapshot_json TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -516,6 +534,29 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_trade_notes_recent
                 ON trade_notes(symbol, created_at DESC);
+
+            -- 下单前可选的环境反馈；它只保存分析和快照，不提供批准、下单或撤单能力。
+            CREATE TABLE IF NOT EXISTS trade_plan_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL,
+                model TEXT DEFAULT '',
+                prompt_version TEXT DEFAULT '',
+                status TEXT DEFAULT 'completed',
+                context_json TEXT NOT NULL DEFAULT '{}',
+                feedback_json TEXT NOT NULL DEFAULT '{}',
+                summary_cn TEXT DEFAULT '',
+                plan_classification TEXT DEFAULT '',
+                macro_alignment TEXT DEFAULT '',
+                realtime_alignment TEXT DEFAULT '',
+                technical_alignment TEXT DEFAULT '',
+                risk_flags TEXT DEFAULT '',
+                data_gaps TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (note_id) REFERENCES trade_notes(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_plan_feedback_note
+                ON trade_plan_feedback(note_id, created_at DESC);
 
             CREATE TABLE IF NOT EXISTS trade_ai_reviews (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -683,6 +724,18 @@ def init_db():
         _ensure_column(conn, "news_clusters", "ai_updated_at")
         _ensure_column(conn, "trade_account_snapshots", "account_mode")
         _ensure_column(conn, "trade_account_snapshots", "margin_mode")
+        _ensure_column(conn, "trade_notes", "trade_type")
+        _ensure_column(conn, "trade_notes", "macro_horizon")
+        _ensure_column(conn, "trade_notes", "analysis_timeframe")
+        _ensure_column(conn, "trade_notes", "entry_trigger")
+        _ensure_column(conn, "trade_notes", "time_stop")
+        _ensure_column(conn, "trade_notes", "plan_status")
+        _ensure_column(conn, "trade_notes", "plan_expires_at")
+        _ensure_column(conn, "trade_notes", "context_captured_at")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_notes_plan_status "
+            "ON trade_notes(plan_status, created_at DESC)"
+        )
         # This index must be created after the compatibility migration above.
         # Older databases do not yet have processing_status when executescript runs.
         conn.execute(
