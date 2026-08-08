@@ -161,8 +161,14 @@ def _tushare_frame(api_name: str, token: str, params=None, fields: str = ""):
     except ValueError as exc:
         raise RuntimeError(f"HTTP {response.status_code}; non-JSON response") from exc
     if not response.ok or payload.get("code") != 0:
+        code = payload.get("code")
+        if code == 40203:
+            raise PermissionError(
+                f"Tushare permission unavailable for {api_name}: "
+                f"{str(payload.get('msg') or '')[:180]}"
+            )
         raise RuntimeError(
-            f"HTTP {response.status_code}; code={payload.get('code')}; "
+            f"HTTP {response.status_code}; code={code}; "
             f"msg={str(payload.get('msg') or '')[:180]}"
         )
     data = payload.get("data") or {}
@@ -207,7 +213,8 @@ def _probe_optional_tushare():
             )
             return frame, pairs
         except Exception as exc:
-            print(f"FAIL  | {label:<32} | {type(exc).__name__}: {str(exc)[:240]}")
+            status = "SKIP" if isinstance(exc, PermissionError) else "FAIL"
+            print(f"{status:<5} | {label:<32} | {type(exc).__name__}: {str(exc)[:240]}")
             return None, []
 
     report_frame(

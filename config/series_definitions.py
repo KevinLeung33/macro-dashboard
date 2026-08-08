@@ -292,11 +292,9 @@ AKSHARE_SERIES = {
     },
     "CN_M2_YOY": {
         "display_name": "🇨🇳 中国M2同比", "unit": "%", "category": "china_liquidity",
-        # Jin10's M2 event feed is stale in production.  The free Sina table
-        # is being schema-validated before it replaces this mapping.
-        "enabled": False,
-        "disabled_reason": "当前 Jin10 M2 数据停在 2025-08，等待验证 Sina/Tushare 替代源",
-        "fetch_func": "macro_china_m2_yearly", "post_process": "event_current",
+        # Production probe: macro_china_m2_yearly (Jin10) stopped in 2025-08,
+        # while this Sina table has a precise M2 YoY field through 2026-06.
+        "fetch_func": "macro_china_supply_of_money", "post_process": "m2_yoy",
         "valid_range": (0, 50),
     },
     "CN_SOCIAL_FINANCING_STOCK_YOY": {

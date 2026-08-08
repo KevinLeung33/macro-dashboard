@@ -87,6 +87,18 @@ def _post_process(df, pp):
             keyword_column(["同比", "m2"]),
             keyword_column(["月份", "日期", "时间", "统计时间"], fallback=0),
         )
+    elif pp == "m2_yoy":
+        # macro_china_supply_of_money includes both the M2 level and its YoY
+        # growth.  The level is far outside a percent range, so select the
+        # explicitly named YoY column rather than relying on column position.
+        records = rows_from_column(
+            keyword_column([
+                "货币和准货币（广义货币M2）同比增长",
+                "m2_yoy",
+                "m2同比",
+            ]),
+            keyword_column(["统计时间", "月份", "日期", "时间"], fallback=0),
+        )
     elif pp == "keyword_stock":
         records = rows_from_column(
             keyword_column(["存量同比", "存量", "同比"]),
