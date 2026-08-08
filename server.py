@@ -152,7 +152,11 @@ def main():
 
         @app.get("/api/health")
         def health():
-            return {"status": "ok", "data_sources": get_data_health()}
+            # Keep the liveness probe intentionally small.  A transient
+            # upstream-data issue must not turn a healthy API process into a
+            # P0 outage for the monitor.  Detailed (and now JSON-safe) source
+            # health remains available from the authenticated status endpoint.
+            return {"status": "ok", "service": "macro-dashboard-api"}
 
         @app.get("/api/status")
         def status(_token: None = Depends(api_guard("status"))):

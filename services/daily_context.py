@@ -58,6 +58,36 @@ def _move_score(item):
     return 0
 
 
+def _nullable(value):
+    """Convert pandas missing values to normal Python ``None`` values.
+
+    ``query_source_health`` combines rows with slightly different columns
+    (market data, news and AI).  Pandas represents absent fields as ``NaN``;
+    those values are neither useful to the dashboard nor valid in FastAPI's
+    strict JSON responses.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        # Health rows only contain scalars, but keep this helper safe if a
+        # future query adds a non-scalar value.
+        pass
+    return value
+
+
+def _health_int(value):
+    value = _nullable(value)
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def get_data_health():
     df = query_source_health()
     if df.empty:
@@ -66,7 +96,7 @@ def get_data_health():
     rows = []
     now = app_now().replace(tzinfo=None)
     for _, row in df.iterrows():
-        fetched_at = row.get("latest_fetched_at")
+        fetched_at = _nullable(row.get("latest_fetched_at"))
         age_hours = None
         if fetched_at:
             try:
@@ -84,23 +114,23 @@ def get_data_health():
         else:
             status = "old"
 
-        last_status = str(row.get("last_status", "")).lower()
+        last_status = str(_nullable(row.get("last_status", "")) or "").lower()
         if last_status == "error":
             status = "error"
         elif last_status == "skipped":
             status = "unavailable"
 
         rows.append({
-            "source": row.get("source"),
-            "series_count": int(row.get("series_count") or 0),
-            "quality_issue_count": int(row.get("quality_issue_count") or 0),
-            "latest_data_date": row.get("latest_data_date"),
+            "source": _nullable(row.get("source")) or "unknown",
+            "series_count": _health_int(row.get("series_count")),
+            "quality_issue_count": _health_int(row.get("quality_issue_count")),
+            "latest_data_date": _nullable(row.get("latest_data_date")),
             "latest_fetched_at": fetched_at,
-            "last_fetch_attempt": row.get("last_fetch_attempt") or fetched_at,
-            "last_series_id": row.get("last_series_id") or "",
+            "last_fetch_attempt": _nullable(row.get("last_fetch_attempt")) or fetched_at,
+            "last_series_id": _nullable(row.get("last_series_id")) or "",
             "age_hours": age_hours,
             "status": status,
-            "last_error": row.get("last_error") or "",
+            "last_error": _nullable(row.get("last_error")) or "",
             "last_status": last_status,
         })
         if rows[-1]["quality_issue_count"] > 0 and rows[-1]["status"] == "fresh":

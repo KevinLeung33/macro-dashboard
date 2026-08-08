@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from services.runtime_controls import (
     TaskBusyError,
@@ -121,8 +122,18 @@ class MacroScheduler:
                 health_minutes = max(1, int(os.getenv("CPOLAR_HEALTH_CHECK_MINUTES", "5")))
             except ValueError:
                 health_minutes = 5
-            # 启动后立即检查一次，之后按配置周期检查。
-            self._check_system_health()
+            try:
+                initial_health_delay = max(5, int(os.getenv("HEALTH_INITIAL_CHECK_DELAY_SECONDS", "45")))
+            except ValueError:
+                initial_health_delay = 45
+            # API 与 Streamlit 由不同的 systemd 服务启动。启动时同步检查会
+            # 在它们完成端口绑定前误报 P0，因此改为短暂延迟后再执行首检。
+            self.scheduler.add_job(
+                self._check_system_health,
+                DateTrigger(run_date=datetime.now(self.timezone) + timedelta(seconds=initial_health_delay)),
+                id="system_health_startup_check",
+                replace_existing=True,
+            )
             self.scheduler.add_job(
                 self._check_system_health,
                 IntervalTrigger(minutes=health_minutes),
