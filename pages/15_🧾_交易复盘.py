@@ -41,6 +41,7 @@ from services.trade_execution import (
     execution_state_label,
     order_role_label,
 )
+from services.dashboard_overview import build_cross_asset_tape, render_quality_strip, render_snapshot_cards
 
 
 st.set_page_config(page_title="交易复盘", page_icon="🧾", layout="wide")
@@ -56,6 +57,11 @@ st.info(
     "AI 影子计划生成时不会读取你的方向、价格、仓位、理由或真实订单；"
     "虚拟成交只写本地数据库，OKX 账户同步始终只读。"
 )
+
+st.subheader("交易前环境上下文")
+st.caption("这里是交易计划的宏观与跨资产背景；详细宏观图表仍在宏观工作台，计划保存时会记录当时快照。")
+render_snapshot_cards(build_cross_asset_tape(["risk", "rates", "fx", "crypto"]), columns=4)
+render_quality_strip(["fred", "yfinance", "binance_spot", "crypto_market"], title="交易上下文数据质量")
 
 
 def _row_dicts(rows):

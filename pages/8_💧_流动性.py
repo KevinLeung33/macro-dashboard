@@ -1,81 +1,74 @@
-"""美元流动性深度页面"""
 import streamlit as st
 
 from db.repository import query_series
+from services.dashboard_overview import render_quality_strip, render_snapshot_cards
 from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
-from utils.navigation import apply_target_window, render_research_target
+from utils.indicators import latest_value
+from utils.navigation import apply_target_window, go_to_research, render_research_target
+
 
 st.set_page_config(page_title="流动性与融资", page_icon="💧", layout="wide")
 st.title("💧 流动性与融资")
-cfg = plotly_config()
-target = render_research_target()
-render_chart_controls()
+cfg = plotly_config(); target = render_research_target(); render_chart_controls()
+
+
+def _q(sid): return apply_target_window(query_series("fred", sid), target)
 def _show(fig, note=""):
     st.plotly_chart(fig, use_container_width=True, config=cfg)
     if note: st.caption(note)
-def _q(sid): return apply_target_window(query_series("fred", sid), target)
 
-# ——— 美元系统流动性 ———
-st.subheader("美元系统水位")
-c1, c2 = st.columns(2)
-with c1:
-    wal = _q("WALCL"); rr = _q("RRPONTSYD"); res = _q("WRESBAL"); tga = _q("WTREGEN")
-    if not wal.empty:
-        w2 = wal.copy(); w2["value"] = w2["value"] / 1e6
-        dfs = {"Fed总资产(T)": w2}
-        if not rr.empty: dfs["RRP(千亿)"] = rr
-        _show(add_range_selector(dual_axis_chart(dfs, "美联储总资产 vs RRP", "万亿$", "千亿$")))
-        st.caption("📖 RRP=货币基金存放在Fed的闲置资金。RRP下降→流动性从Fed流向市场→利好风险资产。2023年RRP从$2.5T降到接近零→流动性释放了近$2T。")
-with c2:
-    if not res.empty and not tga.empty:
-        _show(add_range_selector(dual_axis_chart({"银行准备金(千亿)": res, "TGA(千亿)": tga}, "准备金 vs TGA", "千亿$", "千亿$")))
-        st.caption("📖 准备金↓=银行系统流动性告急(2019年repo危机就是准备金太低)。TGA↑=财政部收税/发债抽走流动性，TGA↓=财政部花钱释放流动性。")
 
-# ——— 融资成本 ———
-st.subheader("融资成本")
-c3, c4 = st.columns(2)
-with c3:
-    ff = _q("FEDFUNDS"); sofr = _q("SOFR"); d2 = _q("DGS2"); d10 = _q("DGS10")
-    if not ff.empty:
-        dfs2 = {"FF": ff}
-        if not sofr.empty: dfs2["SOFR"] = sofr
-        if not d2.empty: dfs2["2Y"] = d2
-        _show(add_range_selector(multi_line_chart(dfs2, "短端利率", "%")))
-        st.caption("📖 SOFR=实际隔夜融资成本，比FF更能反映真实市场。SOFR跳升→流动性紧张。FF-SOFR利差扩大→银行间压力。")
-with c4:
-    tips = _q("DFII10")
-    if not tips.empty:
-        dfs3 = {"10Y名义": d10} if not d10.empty else {}
-        dfs3["10Y实际(TIPS)"] = tips
-        _show(add_range_selector(multi_line_chart(dfs3, "名义 vs 实际利率", "%")))
-        st.caption("📖 实际利率=名义利率-通胀预期。高实际利率通常压制成长股与 BTC，需以图中最新读数判断。")
-
-# ——— 信用双轨 ———
-st.subheader("信用双轨：HY vs IG")
-hy = _q("BAMLH0A0HYM2"); ig = _q("BAMLC0A0CM"); nfci = _q("NFCI")
-c5, c6 = st.columns(2)
-with c5:
-    if not hy.empty:
-        dfs4 = {"高收益HY": hy}
-        if not ig.empty: dfs4["投资级IG"] = ig
-        _show(add_range_selector(dual_axis_chart(dfs4, "信用利差", "HY(bp)", "IG(bp)", height=400)))
-        st.caption("📖 HY-IG利差扩张=风险集中在弱企业。两者同步扩张=系统性信用收缩→2008模式。IG单独跳升=危机扩散到优质企业→更危险。")
-with c6:
+def _summary():
+    rows = []
+    for sid, label, unit in (("WALCL", "Fed总资产", "百万$"), ("RRPONTSYD", "RRP", "十亿$"), ("WRESBAL", "银行准备金", "十亿$"), ("WTREGEN", "TGA", "十亿$"), ("SOFR", "SOFR", "%"), ("NFCI", "NFCI", "")):
+        df = _q(sid)
+        if not df.empty:
+            current = latest_value(df); prev = df.iloc[-6]["value"] if len(df) > 5 else None
+            change = None if prev in (None, 0) else (current / prev - 1) * 100
+            rows.append({"label": label, "unit": unit, "value": current, "change_5_pct": change, "date": str(df.iloc[-1]["date"])[:10], "source": "fred", "status": "ok"})
+    render_snapshot_cards(rows, columns=4)
+    nfci = _q("NFCI")
     if not nfci.empty:
-        _show(add_range_selector(line_chart(nfci, "芝加哥金融条件NFCI", "", color="#d62728", height=400)))
-        st.caption("📖 NFCI整合多项金融条件指标。低于 -0.5 通常偏宽松，高于 0 偏紧；请以图中最新读数判断。")
+        value = latest_value(nfci)
+        st.info(f"流动性状态：NFCI {value:.2f}，" + ("金融条件偏紧。" if value > 0 else "金融条件暂未明显收紧。"))
+    render_quality_strip(["fred"], title="流动性摘要数据质量")
 
-# ——— 融资格局总览 ———
-st.subheader("融资格局速查")
-liq_latest = {}
-for sid in ["RRPONTSYD","WRESBAL","WTREGEN","SOFR","BAMLC0A0CM"]:
-    df = _q(sid)
-    if not df.empty:
-        liq_latest[sid] = df["value"].iloc[-1]
 
-if liq_latest:
-    cols = st.columns(len(liq_latest))
-    labels = {"RRPONTSYD":"RRP(千亿)","WRESBAL":"准备金(千亿)","WTREGEN":"TGA(千亿)","SOFR":"SOFR%","BAMLC0A0CM":"IG利差(bp)"}
-    for i, (sid, val) in enumerate(liq_latest.items()):
-        with cols[i]:
-            st.metric(labels.get(sid,sid), f"{val:.1f}")
+def _details():
+    st.subheader("美元系统水位")
+    wal, rr, res, tga = _q("WALCL"), _q("RRPONTSYD"), _q("WRESBAL"), _q("WTREGEN")
+    if not wal.empty:
+        w2 = wal.copy(); w2["value"] /= 1e6
+        frames = {"Fed总资产(万亿)": w2}
+        if not rr.empty: frames["RRP(十亿) "] = rr
+        _show(add_range_selector(dual_axis_chart(frames, "Fed总资产 vs RRP", "万亿$", "十亿$")), "RRP 下降可能释放流动性，但要结合准备金与 TGA。")
+    if not res.empty and not tga.empty:
+        _show(add_range_selector(dual_axis_chart({"银行准备金": res, "TGA": tga}, "准备金 vs TGA", "十亿$", "十亿$")), "准备金下降或 TGA 上升可能收紧系统流动性。")
+
+    st.subheader("融资成本")
+    ff, sofr, d2, d10 = _q("FEDFUNDS"), _q("SOFR"), _q("DGS2"), _q("DGS10")
+    frames = {label: df for label, df in (("FF", ff), ("SOFR", sofr), ("2Y", d2)) if not df.empty}
+    if frames: _show(add_range_selector(multi_line_chart(frames, "短端利率", "%")), "SOFR 是实际隔夜融资成本，突升时要核对市场压力。")
+    tips = _q("DFII10")
+    frames = {label: df for label, df in (("10Y名义", d10), ("10Y实际", tips)) if not df.empty}
+    if frames: _show(add_range_selector(multi_line_chart(frames, "名义 vs 实际利率", "%")), "实际利率是风险资产估值的重要折现率。")
+
+    st.subheader("信用双轨")
+    hy, ig, nfci = _q("BAMLH0A0HYM2"), _q("BAMLC0A0CM"), _q("NFCI")
+    frames = {label: df for label, df in (("HY", hy), ("IG", ig)) if not df.empty}
+    if frames: _show(add_range_selector(multi_line_chart(frames, "信用利差", "bp")), "HY-IG 同步扩张比单一高收益利差更值得警惕。")
+    if not nfci.empty: _show(add_range_selector(line_chart(nfci, "NFCI", "", color="#d62728")), "NFCI 汇总金融条件。")
+
+
+def _evidence():
+    st.info("流动性结论要同时看：Fed资产负债表、RRP/TGA/准备金、融资利率和信用利差。单一指标变化不代表风险资产必然上涨或下跌。")
+    if st.button("查看货币政策", use_container_width=True):
+        go_to_research("pages/1_💵_货币政策.py", "货币政策", "3M")
+    if st.button("查看信用与风险", use_container_width=True):
+        go_to_research("pages/5_🛡️_信用与风险.py", "信用与风险", "3M")
+
+
+summary_tab, detail_tab, evidence_tab = st.tabs(["状态总览", "详细数据", "事件与证据"])
+with summary_tab: _summary()
+with detail_tab: _details()
+with evidence_tab: _evidence()

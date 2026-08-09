@@ -1,79 +1,63 @@
-"""就业市场深度扫描"""
 import streamlit as st
-import pandas as pd
 
 from db.repository import query_series
-from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
-from utils.indicators import scale_series, yoy_series
-from utils.navigation import apply_target_window, render_research_target
+from services.dashboard_overview import render_quality_strip, render_snapshot_cards
+from utils.chart_utils import line_chart, multi_line_chart, add_range_selector, plotly_config, render_chart_controls
+from utils.indicators import latest_value, yoy_series
+from utils.navigation import apply_target_window, go_to_research, render_research_target
+
 
 st.set_page_config(page_title="就业市场", page_icon="👷", layout="wide")
-st.title("👷 就业市场深度扫描")
-cfg = plotly_config()
-target = render_research_target()
-render_chart_controls()
+st.title("👷 就业市场")
+cfg = plotly_config(); target = render_research_target(); render_chart_controls()
+
+
 def _q(sid): return apply_target_window(query_series("fred", sid), target)
 def _show(fig, note=""):
     st.plotly_chart(fig, use_container_width=True, config=cfg)
     if note: st.caption(note)
 
-# Row 1: Unemployment + Claims
-st.subheader("失业与初请")
-c1, c2 = st.columns(2)
-with c1:
-    unemp = _q("UNRATE")
-    claims = _q("ICSA")
-    if not unemp.empty:
-        dfs = {"失业率(%)": unemp}
-        if not claims.empty: dfs["初请失业金(万)"] = scale_series(claims, 10000)
-        _show(add_range_selector(dual_axis_chart(dfs, "失业率 vs 初请", "%", "万人")))
-        st.caption("📖 初请=每周新增失业金申领人数，是最高频的就业指标。持续上升=裁员加速。")
-with c2:
-    part = _q("CIVPART")
-    if not part.empty:
-        _show(add_range_selector(line_chart(part, "劳动参与率", "%", color="#2ca02c")))
-        st.caption("📖 参与率=就业或找工作的人口占总适龄人口比例。下降=有人退出劳动力市场(灰心工人)=失业率可能低估真实情况。")
 
-# Row 2: JOLTS + Quits
-st.subheader("职位空缺与自愿离职")
-c3, c4 = st.columns(2)
-with c3:
-    jolts = _q("JTSJOL")
-    if not jolts.empty:
-        j_df = jolts.copy(); j_df["value"] = j_df["value"] / 1000
-        _show(add_range_selector(line_chart(j_df, "JOLTS职位空缺(百万)", "百万", color="#1f77b4")))
-        st.caption("📖 职位空缺高于失业人数通常代表劳动力市场偏紧，并可能带来工资上行压力。")
-with c4:
-    quits = _q("JTSQUR")
-    if not quits.empty:
-        _show(add_range_selector(line_chart(quits, "自主离职率(Quits Rate)", "%", color="#ff7f0e")))
-        st.caption("📖 辞职率高=工人对找新工作有信心=劳动力市场强劲。辞职率下降=人们对经济前景担忧→宁愿保住现有工作。")
+def _summary():
+    rows = []
+    for sid, label, unit in (("UNRATE", "失业率", "%"), ("PAYEMS", "非农就业", "千人"), ("JTSJOL", "职位空缺", "千人"), ("ICSA", "初请", "人"), ("AHETPI", "平均时薪", "$")):
+        df = _q(sid)
+        if not df.empty:
+            current = latest_value(df); previous = df.iloc[-6]["value"] if len(df) > 5 else None
+            change = None if previous in (None, 0) else (current / previous - 1) * 100
+            rows.append({"label": label, "unit": unit, "value": current, "change_5_pct": change, "date": str(df.iloc[-1]["date"])[:10], "source": "fred", "status": "ok"})
+    render_snapshot_cards(rows, columns=4)
+    render_quality_strip(["fred"], title="就业摘要数据质量")
 
-# Row 3: Wages + Nonfarm
-st.subheader("工资与就业总量")
-c5, c6 = st.columns(2)
-with c5:
-    wages = query_series("fred", "AHETPI")
-    if not wages.empty:
-        w_df = apply_target_window(yoy_series(wages), target)
-        _show(add_range_selector(line_chart(w_df, "平均时薪同比", "%", color="#d62728")))
-        st.caption("📖 工资涨太快→服务通胀难降→Fed不能降息。工资增速回到3-3.5%=与2%通胀目标一致。")
-with c6:
-    nfp = _q("PAYEMS")
-    if not nfp.empty:
-        n_df = nfp.copy(); n_df["value"] = n_df["value"] / 1000
-        _show(add_range_selector(line_chart(n_df, "非农就业(百万)", "百万", color="#9467bd")))
-        st.caption("📖 非农=美国最重要的月度经济数据。持续增长=经济在扩张。拐头向下=衰退确认。")
 
-# Unemployment vs recession marker
-st.subheader("失业率与衰退信号")
-unemp2 = query_series("fred", "UNRATE")
-if not unemp2.empty and len(unemp2) > 12:
-    u_df = unemp2.copy()
-    u_df["date"] = pd.to_datetime(u_df["date"]); u_df = u_df.sort_values("date")
-    u_df["low_12m"] = u_df["value"].rolling(12).min()
-    u_df.dropna(inplace=True)
-    u_df["sahm"] = u_df["value"] - u_df["low_12m"]
-    sahm = u_df[["date","sahm"]].rename(columns={"sahm":"value"})
-    _show(add_range_selector(line_chart(apply_target_window(sahm, target), "Sahm Rule 衰退指标", "百分点", color="#d62728")))
-    st.caption("📖 Sahm Rule：失业率较过去12个月低点上升 0.5 个百分点时，衰退风险显著上升；请以图中最新数据判断是否触发。")
+def _details():
+    st.subheader("失业与初请")
+    unrate, claims = _q("UNRATE"), _q("ICSA")
+    if not unrate.empty: _show(add_range_selector(line_chart(unrate, "失业率", "%", color="#d62728")), "失业率是滞后指标，需结合初请和职位空缺看拐点。")
+    if not claims.empty: _show(add_range_selector(line_chart(claims, "初请失业金人数", "万人", color="#1f77b4")), "初请比失业率更快反映劳动力市场变化。")
+    st.subheader("职位空缺与自愿离职")
+    jolts, quits = _q("JTSJOL"), _q("JTSQUR")
+    frames = {label: df for label, df in (("职位空缺", jolts), ("自主离职率", quits)) if not df.empty}
+    if frames: _show(add_range_selector(multi_line_chart(frames, "职位空缺与离职", "指标")), "空缺和离职率下降通常代表劳动力市场降温。")
+    st.subheader("工资与就业总量")
+    payems, wage = _q("PAYEMS"), _q("AHETPI")
+    frames = {label: df for label, df in (("非农就业", payems), ("平均时薪", wage)) if not df.empty}
+    if frames: _show(add_range_selector(multi_line_chart(frames, "工资与就业", "指标")), "工资压力要结合通胀和生产率判断。")
+    st.subheader("劳动参与率与增长")
+    participation, indpro = _q("CIVPART"), _q("INDPRO")
+    if not participation.empty: _show(add_range_selector(line_chart(participation, "劳动参与率", "%", color="#2ca02c")))
+    if not indpro.empty:
+        growth = yoy_series(indpro)
+        _show(add_range_selector(line_chart(growth, "工业产出同比", "%", color="#9467bd")), "就业与工业产出同步走弱时，衰退信号更有一致性。")
+
+
+def _evidence():
+    st.info("就业数据发布频率不同，摘要中不要把月度和周度变化直接比较；详细数据会显示各自日期。")
+    if st.button("查看历史衰退对比", use_container_width=True):
+        go_to_research("pages/7_⏳_历史对比.py", "历史对比", "3M")
+
+
+summary_tab, detail_tab, evidence_tab = st.tabs(["状态总览", "详细数据", "事件与证据"])
+with summary_tab: _summary()
+with detail_tab: _details()
+with evidence_tab: _evidence()

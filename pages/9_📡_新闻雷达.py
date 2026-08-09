@@ -13,6 +13,7 @@ from services.ai_review import ai_review_statistics, refresh_ai_analysis_reviews
 from services.news_clusterer import build_news_clusters
 from services.news_fetcher import RSS_FEEDS
 from services.news_research_links import refresh_news_research_links
+from services.dashboard_overview import render_quality_strip
 from utils.navigation import render_research_target
 from services.time_utils import app_now
 from services.access_control import render_admin_access, require_admin
@@ -25,6 +26,7 @@ except ValueError:
     cluster_warn_article_count = 25
 st.title("📡 新闻雷达")
 target = render_research_target()
+render_quality_strip(["news"], title="新闻摘要数据质量")
 
 processing = query_news_processing_summary()
 status_labels = {

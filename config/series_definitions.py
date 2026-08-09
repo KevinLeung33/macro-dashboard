@@ -226,6 +226,11 @@ YFINANCE_SYMBOLS = {
     "^DJI": {"display_name": "🇺🇸 道琼斯工业", "category": "us_equities", "yaxis_label": "点"},
     "^RUT": {"display_name": "🇺🇸 罗素2000", "category": "us_equities", "yaxis_label": "点"},
     "^VIX": {"display_name": "😱 VIX恐慌指数", "category": "volatility", "yaxis_label": "点"},
+    "QQQ": {"display_name": "🇺🇸 QQQ 纳指100 ETF", "category": "us_equities", "yaxis_label": "美元"},
+    "MAGS": {"display_name": "🇺🇸 MAGS 七巨头 ETF", "category": "us_equities", "yaxis_label": "美元"},
+    "TLT": {"display_name": "🇺🇸 TLT 长久期美债 ETF", "category": "us_rates", "yaxis_label": "美元"},
+    "HYG": {"display_name": "🇺🇸 HYG 高收益债 ETF", "category": "credit", "yaxis_label": "美元"},
+    "LQD": {"display_name": "🇺🇸 LQD 投资级债 ETF", "category": "credit", "yaxis_label": "美元"},
     "DX-Y.NYB": {"display_name": "💱 美元指数DXY", "category": "fx", "yaxis_label": "点"},
     "GC=F": {"display_name": "🥇 黄金期货", "category": "commodities", "yaxis_label": "美元/盎司"},
     "CL=F": {"display_name": "🛢️ WTI原油期货", "category": "commodities", "yaxis_label": "美元/桶"},
@@ -237,6 +242,7 @@ YFINANCE_SYMBOLS = {
     "^HSI": {"display_name": "🇭🇰 恒生指数", "category": "international", "yaxis_label": "点"},
     "USDCNH=X": {"display_name": "🇨🇳 美元/离岸人民币", "category": "fx", "yaxis_label": "CNH"},
     "USDCNY=X": {"display_name": "🇨🇳 美元/在岸人民币", "category": "fx", "yaxis_label": "CNY"},
+    "USDJPY=X": {"display_name": "🇯🇵 美元/日元", "category": "fx", "yaxis_label": "JPY"},
     "000300.SS": {"display_name": "🇨🇳 沪深300", "category": "international", "yaxis_label": "点"},
     "399006.SZ": {"display_name": "🇨🇳 创业板指", "category": "international", "yaxis_label": "点"},
     "^GDAXI": {"display_name": "🇩🇪 德国DAX", "category": "international", "yaxis_label": "点"},
@@ -343,7 +349,7 @@ AKSHARE_SERIES = {
 
 ALL_CATEGORIES = [
     "monetary", "fiscal", "employment", "inflation", "gdp",
-    "us_equities", "volatility", "fx", "commodities",
+    "us_equities", "us_rates", "volatility", "fx", "commodities",
     "crypto", "crypto_equity", "semiconductors", "international",
     "growth", "sentiment", "credit", "liquidity", "global_cycle", "china_liquidity",
 ]
