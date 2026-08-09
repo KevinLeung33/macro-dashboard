@@ -84,6 +84,7 @@ python -c "from data.pipeline import fetch_all; fetch_all(incremental=True)"
 
 - `fred`：美国宏观、利率、信用、市场和 BTC Coinbase 数据。
 - `akshare`：中国宏观数据。
+- `akshare_hk_index`：恒生科技指数（`HSTECH`）精确日线；使用 AKShare 的新浪港股指数历史接口，与中国宏观抓取和健康状态分开记录。
 - `tic`：美国财政部 TIC 美债持有数据。
 - `alpha_vantage`：MSTR/NVDA/MU 等美股可选备选源；受免费额度限制，默认关闭。
 - `stooq`：免 key 市场数据可选备选源；部分环境会返回空数据，默认关闭。
@@ -125,6 +126,7 @@ ETF flows 和交易所净流入没有统一稳定的免费公共接口；未配�
 - Stooq：已有历史时只请求最近窗口。
 - Alpha Vantage：已有历史时使用 compact 输出。
 - yfinance/Binance spot：已有历史时只拉短窗口。
+- AKShare 港股指数：每次读取完整历史表后只写入最近重叠窗口；若完整历史少于 250 条或最新交易日超过 14 天，会保留旧数据并记录失败，而不是把不完整响应写入看板。
 - AKShare：接口通常返回全量表，本地过滤新记录。
 - DefiLlama：接口通常返回全量历史，本地过滤新记录。
 
@@ -513,8 +515,8 @@ python -c "from services.maintenance import restore_database; print(restore_data
 
 P1 新增数据源依赖外部接口，部署后先执行一次手动刷新，再检查页面、抓取日志和数据库中的 `source_url`、`fetched_at`、`release_at`：
 
-- Yahoo Finance：确认 `USDCNH=X`、`USDCNY=X`、`000300.SS`、`399006.SZ`、`^HSTECH` 返回非空数据；部分符号不可用时应记录失败，不影响其他指标。
-- AKShare：确认 CPI/PPI 同比和 M2 同比的接口版本及字段名称匹配；社融存量同比在验证到具备该字段的来源前不展示。AKShare 升级后优先查看抓取日志中的字段错误。
+- Yahoo Finance：确认 `USDCNH=X`、`USDCNY=X`、`000300.SS`、`399006.SZ` 返回非空数据；部分符号不可用时应记录失败，不影响其他指标。`HSTECH.HK` 在生产环境虽然可返回报价但只返回一根历史 K 线，因此不作为正式历史源。
+- AKShare：确认 CPI/PPI 同比和 M2 同比的接口版本及字段名称匹配；恒生科技指数使用 `stock_hk_index_daily_sina(symbol="HSTECH")`，上线验收要求历史记录数不少于 250 条且最新交易日不超过 14 天。社融存量同比在验证到具备该字段的来源前不展示。AKShare 升级后优先查看抓取日志中的字段错误。
 - Binance：确认现货 K 线、资金费率和 OI 接口可访问，核对 OI 返回值的单位，并留意公共接口的限频响应。
 - ETF/交易所资金流：在 `.env` 配置 `BTC_ETF_FLOWS_URL`、`BTC_EXCHANGE_NETFLOW_URL` 后，确认返回 CSV/JSON 至少包含 `date` 和 `flow`、`net_flow`、`value` 或 `amount` 字段。
 - 空数据降级：移除可选资金流 URL 或模拟接口失败，确认页面仍可打开，并显示“未配置或暂无数据”。

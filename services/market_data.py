@@ -18,6 +18,7 @@ MARKET_PROVIDER_CHAIN = {
     "GC=F": [("yfinance", "GC=F", "Gold futures")],
     "CL=F": [("yfinance", "CL=F", "WTI futures")],
     "BTC-USD": [("fred", "CBBTCUSD", "BTC"), ("binance_spot", "BTC-USD", "BTC")],
+    "HSTECH": [("akshare_hk_index", "HSTECH", "Hang Seng TECH Index")],
 }
 
 

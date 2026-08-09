@@ -18,6 +18,14 @@ DATA_SOURCES = {
         "incremental": "filter_after_fetch",
         "description": "China macro data. Fetchers may return full tables, then store only new rows.",
     },
+    "akshare_hk_index": {
+        "label": "AKShare Hong Kong index",
+        "enabled": True,
+        "priority": 21,
+        "refresh": "daily",
+        "incremental": "filter_after_fetch",
+        "description": "Exact Hang Seng TECH Index daily history through AKShare's Sina adapter.",
+    },
     "tic": {
         "label": "US Treasury TIC",
         "enabled": True,

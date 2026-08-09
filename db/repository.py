@@ -26,6 +26,7 @@ def _default_source_url(source, series_id):
         "stooq": "https://stooq.com/",
         "alpha_vantage": "https://www.alphavantage.co/",
         "akshare": "https://akshare.akfamily.xyz/",
+        "akshare_hk_index": "https://akshare.akfamily.xyz/data/index/index.html",
         "binance_spot": "https://api.binance.com/api/v3/klines",
         "crypto_liquidity": "https://defillama.com/stablecoins",
     }
@@ -33,9 +34,14 @@ def _default_source_url(source, series_id):
 
 
 def _valid_range(source, series_id):
-    from config.series_definitions import AKSHARE_SERIES, FRED_SERIES
+    from config.series_definitions import AKSHARE_HK_INDEX_SERIES, AKSHARE_SERIES, FRED_SERIES
 
-    meta = FRED_SERIES.get(series_id, {}) if source == "fred" else AKSHARE_SERIES.get(series_id, {})
+    if source == "fred":
+        meta = FRED_SERIES.get(series_id, {})
+    elif source == "akshare_hk_index":
+        meta = AKSHARE_HK_INDEX_SERIES.get(series_id, {})
+    else:
+        meta = AKSHARE_SERIES.get(series_id, {})
     return meta.get("valid_range")
 
 

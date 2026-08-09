@@ -40,7 +40,7 @@ usdcnh=_q("yfinance","USDCNH=X")
 usdcny=_q("yfinance","USDCNY=X")
 csi300=_q("yfinance","000300.SS")
 chinext=_q("yfinance","399006.SZ")
-hstech=_q("yfinance","^HSTECH")
+hstech, _hstech_meta = _market("HSTECH")
 
 if any(not df.empty for df in (cn_pmi, cn_cx, cn_cpi, cn_ppi, cn_m2)):
     a,b=st.columns(2)

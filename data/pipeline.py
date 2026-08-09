@@ -61,6 +61,13 @@ def fetch_all(include_tic=True, include_crypto=True, include_global=True,
             fetch_global_data(incremental=incremental)
         except Exception as e:
             print(f"  Global skipped: {e}")
+    if source_enabled("akshare_hk_index", include_global):
+        print("Fetching Hong Kong index (AKShare: exact HSTECH)...")
+        try:
+            from data.fetchers.hk_index_fetcher import fetch_and_store_hk_index_market
+            fetch_and_store_hk_index_market(incremental=incremental)
+        except Exception as e:
+            print(f"  Hong Kong index skipped: {e}")
     if source_enabled("tic", include_tic):
         print("Fetching TIC (美债持有)...")
         fetch_and_store_tic()

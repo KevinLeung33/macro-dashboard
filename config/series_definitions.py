@@ -239,10 +239,29 @@ YFINANCE_SYMBOLS = {
     "USDCNY=X": {"display_name": "🇨🇳 美元/在岸人民币", "category": "fx", "yaxis_label": "CNY"},
     "000300.SS": {"display_name": "🇨🇳 沪深300", "category": "international", "yaxis_label": "点"},
     "399006.SZ": {"display_name": "🇨🇳 创业板指", "category": "international", "yaxis_label": "点"},
-    "^HSTECH": {"display_name": "🇭🇰 恒生科技", "category": "international", "yaxis_label": "点"},
     "^GDAXI": {"display_name": "🇩🇪 德国DAX", "category": "international", "yaxis_label": "点"},
     "^FTSE": {"display_name": "🇬🇧 英国富时100", "category": "international", "yaxis_label": "点"},
 }
+
+
+# Yahoo's HSTECH.HK endpoint currently returns only a single daily bar on the
+# production host, despite accepting a multi-year request.  Use AKShare's
+# Sina Hong Kong index history endpoint instead: it returns the exact index
+# and a complete daily history, rather than an ETF proxy.
+AKSHARE_HK_INDEX_SERIES = {
+    "HSTECH": {
+        "symbol": "HSTECH",
+        "display_name": "🇭🇰 恒生科技",
+        "unit": "点",
+        "frequency": "daily",
+        "category": "international",
+        "yaxis_label": "点",
+        "valid_range": (100, 20000),
+        "min_history_rows": 250,
+        "max_stale_days": 14,
+    },
+}
+
 
 AKSHARE_SERIES = {
     "CN_PMI": {

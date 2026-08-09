@@ -3,6 +3,7 @@ pandas>=2.0.0
 plotly>=5.17.0
 requests>=2.31.0
 yfinance>=0.2.31
+akshare>=1.18.0
 apscheduler>=3.10.4
 sqlalchemy>=2.0.0
 python-dotenv>=1.0.0

@@ -23,7 +23,7 @@ ASSETS = (
     AssetDefinition("SP500", "pages/2_📊_市场数据.py", "美股与 VIX", "3M", market_id="^GSPC"),
     AssetDefinition("NASDAQ", "pages/2_📊_市场数据.py", "美股与 VIX", "3M", market_id="^IXIC"),
     AssetDefinition("CNH", "pages/3_🌍_全球市场.py", "中国资产与人民币", "3M", source="yfinance", series_id="USDCNH=X"),
-    AssetDefinition("HSTECH", "pages/3_🌍_全球市场.py", "中国资产与人民币", "3M", source="yfinance", series_id="^HSTECH"),
+    AssetDefinition("HSTECH", "pages/3_🌍_全球市场.py", "中国资产与人民币", "3M", market_id="HSTECH"),
     AssetDefinition("Gold", "pages/2_📊_市场数据.py", "黄金与美元", "6M", market_id="GC=F"),
 )
 
