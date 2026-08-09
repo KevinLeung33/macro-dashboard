@@ -18,7 +18,7 @@ from services.okx_readonly import OKXReadOnlyClient
 from services.time_utils import app_now
 
 logger = logging.getLogger("trade_plan_context")
-SNAPSHOT_VERSION = "trade-plan-context-v1"
+SNAPSHOT_VERSION = "trade-plan-context-v2"
 
 
 def _asset_from_symbol(symbol):
@@ -226,6 +226,12 @@ def build_trade_plan_snapshot(plan):
             "expected_horizon": plan.get("expected_horizon", ""),
             "macro_horizon": plan.get("macro_horizon", ""),
             "analysis_timeframe": plan.get("analysis_timeframe", ""),
+            "entry_order_type": plan.get("entry_order_type", ""),
+            "entry_price": plan.get("entry_price"),
+            "trigger_price": plan.get("trigger_price"),
+            "planned_quantity": plan.get("planned_quantity"),
+            "plan_status": plan.get("plan_status", ""),
+            "order_id": plan.get("order_id", ""),
         },
         "live_market": _live_market_snapshot(symbol, plan.get("analysis_timeframe", "")),
         "macro": {

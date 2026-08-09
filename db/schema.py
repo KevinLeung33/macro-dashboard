@@ -56,6 +56,10 @@ _COMPATIBLE_COLUMNS = {
         "trade_type": "TEXT DEFAULT 'swing'",
         "macro_horizon": "TEXT DEFAULT ''",
         "analysis_timeframe": "TEXT DEFAULT ''",
+        "entry_order_type": "TEXT DEFAULT 'manual'",
+        "entry_price": "REAL",
+        "trigger_price": "REAL",
+        "planned_quantity": "REAL",
         "entry_trigger": "TEXT DEFAULT ''",
         "time_stop": "TEXT DEFAULT ''",
         "plan_status": "TEXT DEFAULT 'planned'",
@@ -528,6 +532,10 @@ def init_db():
                 side TEXT DEFAULT '',
                 thesis TEXT DEFAULT '',
                 setup TEXT DEFAULT '',
+                entry_order_type TEXT DEFAULT 'manual',
+                entry_price REAL,
+                trigger_price REAL,
+                planned_quantity REAL,
                 stop_price REAL,
                 target_price REAL,
                 expected_horizon TEXT DEFAULT '',
@@ -746,6 +754,10 @@ def init_db():
         _ensure_column(conn, "trade_notes", "trade_type")
         _ensure_column(conn, "trade_notes", "macro_horizon")
         _ensure_column(conn, "trade_notes", "analysis_timeframe")
+        _ensure_column(conn, "trade_notes", "entry_order_type")
+        _ensure_column(conn, "trade_notes", "entry_price")
+        _ensure_column(conn, "trade_notes", "trigger_price")
+        _ensure_column(conn, "trade_notes", "planned_quantity")
         _ensure_column(conn, "trade_notes", "entry_trigger")
         _ensure_column(conn, "trade_notes", "time_stop")
         _ensure_column(conn, "trade_notes", "plan_status")

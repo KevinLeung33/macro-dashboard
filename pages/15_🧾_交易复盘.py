@@ -14,6 +14,7 @@ from db.repository import (
     query_trade_orders,
     query_trade_plan_feedback,
     query_trade_positions,
+    update_trade_note_order_plan,
 )
 from db.schema import init_db
 from services.access_control import render_admin_access, require_admin
@@ -26,13 +27,13 @@ from services.trade_plan_feedback import generate_trade_plan_feedback
 st.set_page_config(page_title="交易复盘", page_icon="🧾", layout="wide")
 admin_access = render_admin_access()
 st.title("🧾 Crypto 交易复盘")
-st.caption("只记录真实交易与事后点评；本页没有下单接口，也不会接入虚拟成交。")
+st.caption("记录交易计划、真实订单与事后点评；本页没有下单接口，也不会接入虚拟成交。")
 init_db()
 
 st.info(
     "交易计划会保存当时的宏观、新闻、数据新鲜度和 OKX 公开 K 线快照。"
     "“计划环境反馈”由你主动触发，只指出证据、矛盾和风险，不批准、阻止或执行交易；"
-    "OKX 账户同步也始终只读。"
+    "计划入场价与本地挂单状态可编辑，OKX 账户同步始终只读。"
 )
 
 
@@ -58,6 +59,88 @@ def _pct_label(value):
         return f"{float(value):+.2f}%" if value is not None else "—"
     except (TypeError, ValueError):
         return "—"
+
+
+ENTRY_ORDER_TYPE_LABELS = {
+    "limit": "限价挂单",
+    "market": "市价执行",
+    "trigger_limit": "条件限价单",
+    "trigger_market": "条件市价单",
+    "manual": "手动/分批执行",
+}
+PLAN_STATUS_LABELS = {
+    "planned": "仅计划（尚未挂单）",
+    "waiting_trigger": "等待条件触发",
+    "open": "已挂单，等待成交",
+    "partially_filled": "部分成交",
+    "filled": "已成交",
+    "cancelled": "已撤销",
+    "expired": "已过期",
+    "executed": "已执行（旧记录）",
+}
+PENDING_PLAN_STATUSES = {"planned", "waiting_trigger", "open", "partially_filled"}
+OPEN_EXCHANGE_ORDER_STATUSES = {"live", "partially_filled", "effective"}
+
+
+def _number_or_none(value):
+    try:
+        value = float(value)
+        return value if value > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _number_label(value):
+    value = _number_or_none(value)
+    if value is None:
+        return "—"
+    return f"{value:,.8f}".rstrip("0").rstrip(".")
+
+
+def _symbol_key(symbol):
+    raw = str(symbol or "").upper().strip().replace("_", "-").replace("/", "-")
+    for suffix in ("-SWAP", "-FUTURES", "-SPOT"):
+        if raw.endswith(suffix):
+            raw = raw[:-len(suffix)]
+            break
+    return raw.replace("-", "")
+
+
+def _okx_chart_instrument(symbol):
+    """Accept journal symbols such as BTCUSDT as well as OKX instrument IDs."""
+    raw = str(symbol or "").upper().strip().replace("_", "-").replace("/", "-")
+    if not raw or raw.endswith(("-SWAP", "-FUTURES", "-SPOT")):
+        return raw
+    if "-" in raw:
+        return raw + "-SWAP"
+    for quote in ("USDT", "USDC", "USD"):
+        if raw.endswith(quote) and len(raw) > len(quote):
+            return f"{raw[:-len(quote)]}-{quote}-SWAP"
+    return raw
+
+
+def _plan_status_from_exchange(status):
+    value = str(status or "").lower()
+    return {
+        "live": "open",
+        "effective": "open",
+        "partially_filled": "partially_filled",
+        "filled": "filled",
+        "canceled": "cancelled",
+        "mmp_canceled": "cancelled",
+        "order_failed": "cancelled",
+    }.get(value, "planned")
+
+
+def _entry_type_from_exchange(order_type):
+    value = str(order_type or "").lower()
+    if value in ENTRY_ORDER_TYPE_LABELS:
+        return value
+    if "trigger" in value or "conditional" in value:
+        return "trigger_limit" if "limit" in value else "trigger_market"
+    if value in {"market", "optimal_limit_ioc"}:
+        return "market"
+    return "limit" if value else "manual"
 
 
 st.subheader("OKX 只读账户与市场")
@@ -126,9 +209,27 @@ if positions:
 else:
     st.caption("当前没有已同步的非零持仓。")
 
+pending_orders = [
+    dict(row) for row in orders
+    if str(row["status"] or "").lower() in OPEN_EXCHANGE_ORDER_STATUSES
+]
+if pending_orders:
+    st.markdown("**当前挂单（OKX 只读同步）**")
+    pending_order_df = pd.DataFrame(pending_orders)
+    pending_columns = [
+        "order_id", "symbol", "side", "position_side", "order_type", "status", "price",
+        "quantity", "filled_quantity", "reduce_only", "placed_at", "updated_at",
+    ]
+    st.dataframe(
+        pending_order_df[[column for column in pending_columns if column in pending_order_df.columns]],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+chart_plan_notes = query_trade_notes(limit=100)
 symbol_options = sorted({
     str(row["symbol"])
-    for row in list(positions) + list(orders) + list(fills)
+    for row in list(positions) + list(orders) + list(fills) + list(chart_plan_notes)
     if row["symbol"]
 })
 if symbol_options:
@@ -141,7 +242,8 @@ if symbol_options:
         chart_refresh = st.button("刷新 K 线", disabled=not admin_access)
     if chart_refresh:
         try:
-            candles = okx_client.fetch_candles(chart_symbol, bar=chart_bar, limit=200)
+            chart_instrument = _okx_chart_instrument(chart_symbol)
+            candles = okx_client.fetch_candles(chart_instrument, bar=chart_bar, limit=200)
             if not candles:
                 st.warning("OKX 没有返回 K 线。")
             else:
@@ -153,7 +255,11 @@ if symbol_options:
                     x=candle_df["timestamp"], open=candle_df["open"], high=candle_df["high"],
                     low=candle_df["low"], close=candle_df["close"], name=chart_symbol,
                 )])
-                chart_fills = [dict(row) for row in fills if row["symbol"] == chart_symbol]
+                chart_key = _symbol_key(chart_symbol)
+                chart_fills = [
+                    dict(row) for row in fills
+                    if _symbol_key(row["symbol"]) == chart_key
+                ]
                 if chart_fills:
                     marker_df = pd.DataFrame(chart_fills)
                     marker_df["executed_at"] = pd.to_datetime(marker_df["executed_at"], utc=True)
@@ -165,14 +271,82 @@ if symbol_options:
                                 name=f"{fill_side} 成交", marker={"color": color, "size": 10, "symbol": marker},
                                 hovertext=side_df["quantity"].astype(str),
                             )
+                chart_orders = [
+                    dict(row) for row in orders
+                    if _symbol_key(row["symbol"]) == chart_key
+                    and str(row["status"] or "").lower() in OPEN_EXCHANGE_ORDER_STATUSES
+                ]
+                for order in chart_orders[:10]:
+                    price = _number_or_none(order.get("price")) or _number_or_none(order.get("avg_price"))
+                    if price is None:
+                        continue
+                    side_text = str(order.get("side") or "").lower()
+                    color = "#00a67d" if side_text == "buy" else "#e74c3c"
+                    order_id = str(order.get("order_id") or "")
+                    fig.add_hline(
+                        y=price,
+                        line_dash="dash",
+                        line_color=color,
+                        annotation_text=f"OKX 挂单 #{order_id[-6:]} · {side_text or '—'}",
+                        annotation_position="top right",
+                        annotation_font_color=color,
+                    )
+
+                order_by_id = {str(row["order_id"]): dict(row) for row in orders if row["order_id"]}
+                chart_plans = [
+                    dict(row) for row in chart_plan_notes
+                    if _symbol_key(row["symbol"]) == chart_key
+                ]
+                planned_lines = 0
+                for plan in chart_plans:
+                    linked = order_by_id.get(str(plan.get("order_id") or ""))
+                    status = (
+                        _plan_status_from_exchange(linked.get("status"))
+                        if linked else str(plan.get("plan_status") or "planned").lower()
+                    )
+                    if status not in PENDING_PLAN_STATUSES:
+                        continue
+                    entry_price = _number_or_none(plan.get("entry_price"))
+                    if entry_price is not None:
+                        side_text = str(plan.get("side") or "").lower()
+                        color = "#00a67d" if side_text in {"long", "buy"} else "#e74c3c"
+                        entry_type = _entry_type_from_exchange(plan.get("entry_order_type"))
+                        fig.add_hline(
+                            y=entry_price,
+                            line_dash="dot",
+                            line_color=color,
+                            annotation_text=(
+                                f"计划 #{plan['id']} · {ENTRY_ORDER_TYPE_LABELS.get(entry_type, entry_type)}"
+                                f" · {PLAN_STATUS_LABELS.get(status, status)}"
+                            ),
+                            annotation_position="bottom left",
+                            annotation_font_color=color,
+                        )
+                        planned_lines += 1
+                    trigger_price = _number_or_none(plan.get("trigger_price"))
+                    if trigger_price is not None:
+                        fig.add_hline(
+                            y=trigger_price,
+                            line_dash="dashdot",
+                            line_color="#9b59b6",
+                            annotation_text=f"计划 #{plan['id']} 触发价",
+                            annotation_position="bottom right",
+                            annotation_font_color="#9b59b6",
+                        )
+                    if planned_lines >= 10:
+                        break
                 fig.update_layout(height=520, xaxis_rangeslider_visible=False, margin={"l": 20, "r": 20, "t": 30, "b": 20})
                 st.plotly_chart(fig, use_container_width=True)
+                if chart_orders or planned_lines:
+                    st.caption("图中虚线为已同步的 OKX 待成交订单；点线为本地交易计划的待执行入场价；三角形为实际成交。")
                 last = candles[-1]
                 first = candles[0]
                 return_pct = ((last["close"] / first["close"] - 1) * 100) if first.get("close") else None
                 st.session_state["okx_market_context"] = {
-                    "symbol": chart_symbol, "bar": chart_bar, "last_candle": last,
+                    "symbol": chart_instrument, "bar": chart_bar, "last_candle": last,
                     "window_return_pct": return_pct, "fill_count_on_chart": len(chart_fills),
+                    "open_order_count_on_chart": len(chart_orders),
+                    "planned_entry_count_on_chart": planned_lines,
                 }
         except Exception as exc:
             st.error(f"K 线读取失败：{exc}")
@@ -208,18 +382,32 @@ with st.form("trade_note_form", clear_on_submit=False):
         macro_horizon = st.selectbox("宏观判断周期", ["日内", "1-3天", "1-2周", "1-3月", "更长", "不适用"])
     with c4:
         analysis_timeframe = st.selectbox("主要技术周期", ["5m", "15m", "1H", "4H", "1D", "其他"])
-        plan_status = st.selectbox("计划状态", ["planned", "executed", "cancelled"], format_func={
-            "planned": "计划中", "executed": "已执行", "cancelled": "已取消",
-        }.get)
-    c5, c6, c7 = st.columns(3)
+        plan_status = st.selectbox(
+            "计划 / 挂单状态",
+            list(PLAN_STATUS_LABELS),
+            format_func=lambda value: PLAN_STATUS_LABELS.get(value, value),
+        )
+    c5, c6, c7, c8 = st.columns(4)
     with c5:
+        entry_order_type = st.selectbox(
+            "入场方式",
+            list(ENTRY_ORDER_TYPE_LABELS),
+            format_func=lambda value: ENTRY_ORDER_TYPE_LABELS.get(value, value),
+        )
+        entry_price = st.number_input("计划入场价 / 限价（可选）", min_value=0.0, value=0.0, format="%.8f")
+    with c6:
+        trigger_price = st.number_input("触发价（条件单可选）", min_value=0.0, value=0.0, format="%.8f")
+        planned_quantity = st.number_input("计划数量（币/合约张数，可选）", min_value=0.0, value=0.0, format="%.8f")
+    with c7:
         stop_price = st.number_input("价格止损（可选）", min_value=0.0, value=0.0, format="%.8f")
         target_price = st.number_input("目标价（可选）", min_value=0.0, value=0.0, format="%.8f")
-    with c6:
-        order_id = st.text_input("订单 ID（可稍后补）")
+    with c8:
+        order_id = st.text_input("关联订单 ID（可稍后补）")
         plan_expires_at = st.text_input("计划到期时间（可选）", placeholder="例如 2026-08-09 08:00")
-    with c7:
+    c9, c10 = st.columns(2)
+    with c9:
         entry_trigger = st.text_input("明确入场触发", placeholder="例如 1H 跌破后反抽不过")
+    with c10:
         time_stop = st.text_input("时间止损", placeholder="例如 8小时未扩散则退出/重做")
     setup = st.text_input("技术形态/交易结构", placeholder="突破、回踩、趋势延续、区间边缘……")
     thesis = st.text_area("为什么做这笔交易？", placeholder="记录宏观、新闻、市场结构和你当时的判断……")
@@ -228,20 +416,35 @@ with st.form("trade_note_form", clear_on_submit=False):
 
 if saved and require_admin("保存交易记录"):
     clean_symbol = symbol.strip().upper()
+    entry_price_value = _number_or_none(entry_price)
+    trigger_price_value = _number_or_none(trigger_price)
+    planned_quantity_value = _number_or_none(planned_quantity)
     if not clean_symbol or not thesis.strip():
         st.error("交易对和交易理由不能为空。")
+    elif entry_order_type in {"limit", "trigger_limit"} and entry_price_value is None:
+        st.error("限价单和条件限价单都需要填写计划入场价。")
+    elif entry_order_type in {"trigger_limit", "trigger_market"} and trigger_price_value is None:
+        st.error("条件单需要填写触发价。")
     else:
+        if plan_status in {"open", "partially_filled"} and not order_id.strip():
+            st.warning("已记录为挂单/部分成交，但尚未关联交易所订单 ID；可在计划详情中后补。")
         plan_payload = {
             "venue": venue, "symbol": clean_symbol, "side": side, "trade_type": trade_type,
             "expected_horizon": horizon, "macro_horizon": macro_horizon,
             "analysis_timeframe": analysis_timeframe,
+            "entry_order_type": entry_order_type,
+            "entry_price": entry_price_value,
+            "trigger_price": trigger_price_value,
+            "planned_quantity": planned_quantity_value,
+            "plan_status": plan_status,
+            "order_id": order_id.strip(),
         }
         with st.spinner("正在保存计划当时的宏观、新闻和公开市场快照……"):
             try:
                 plan_snapshot = build_trade_plan_snapshot(plan_payload)
             except Exception as exc:
                 plan_snapshot = {
-                    "snapshot_version": "trade-plan-context-v1",
+                    "snapshot_version": "trade-plan-context-v2",
                     "collection_errors": [f"计划快照生成失败：{str(exc)[:240]}"],
                 }
             note_id = insert_trade_note(
@@ -251,6 +454,10 @@ if saved and require_admin("保存交易记录"):
                 side=side,
                 thesis=thesis.strip(),
                 setup=setup.strip(),
+                entry_order_type=entry_order_type,
+                entry_price=entry_price_value,
+                trigger_price=trigger_price_value,
+                planned_quantity=planned_quantity_value,
                 stop_price=stop_price or None,
                 target_price=target_price or None,
                 expected_horizon=horizon,
@@ -285,6 +492,13 @@ else:
     selected_id = note_options[selected_label]
     st.session_state["selected_trade_note_id"] = selected_id
     selected = next(row for row in notes if row["id"] == selected_id)
+    selected_status = str(selected["plan_status"] or "planned").lower()
+    if selected_status not in PLAN_STATUS_LABELS:
+        selected_status = "planned"
+    selected_entry_type = _entry_type_from_exchange(selected["entry_order_type"])
+    selected_order_id = (selected["order_id"] or "").strip()
+    linked_order_rows = query_trade_orders(order_id=selected_order_id, limit=1) if selected_order_id else []
+    linked_order = dict(linked_order_rows[0]) if linked_order_rows else None
 
     detail_left, detail_right = st.columns(2)
     with detail_left:
@@ -301,9 +515,135 @@ else:
             f"时间止损：{selected['time_stop'] or '—'}"
         )
         st.caption(
-            f"状态：{selected['plan_status'] or 'planned'} · 到期：{selected['plan_expires_at'] or '—'} · "
-            f"订单：{selected['order_id'] or '待同步'}"
+            f"计划入场：{ENTRY_ORDER_TYPE_LABELS.get(selected_entry_type, selected_entry_type)} · "
+            f"价格：{_number_label(selected['entry_price'])} · "
+            f"触发价：{_number_label(selected['trigger_price'])} · "
+            f"数量：{_number_label(selected['planned_quantity'])}"
         )
+        st.caption(
+            f"状态：{PLAN_STATUS_LABELS.get(selected_status, selected_status)} · "
+            f"到期：{selected['plan_expires_at'] or '—'} · "
+            f"订单：{selected_order_id or '尚未关联'}"
+        )
+        if linked_order:
+            st.info(
+                "已同步订单："
+                f"{linked_order['status'] or '—'} · {linked_order['order_type'] or '—'} · "
+                f"价格 {_number_label(linked_order['price'])} · "
+                f"已成交 {_number_label(linked_order['filled_quantity'])}/"
+                f"{_number_label(linked_order['quantity'])}"
+            )
+        elif selected_order_id:
+            st.caption("该订单 ID 尚未出现在当前只读同步记录中；同步 OKX 后会自动用于展示和复盘。")
+
+    matching_synced_orders = [
+        dict(row) for row in orders
+        if str(selected["venue"] or "").upper() == "OKX"
+        and _symbol_key(row["symbol"]) == _symbol_key(selected["symbol"])
+    ]
+    order_choices = {"不从已同步订单选择（手动填写下方订单 ID）": None}
+    for order in matching_synced_orders:
+        label = (
+            f"#{order['order_id']} · {order['side'] or '—'} {order['order_type'] or '—'} · "
+            f"{order['status'] or '—'} · 价格 {_number_label(order['price'])}"
+        )
+        order_choices[label] = order
+    order_labels = list(order_choices)
+    matching_label = next(
+        (label for label, order in order_choices.items() if order and order["order_id"] == selected_order_id),
+        order_labels[0],
+    )
+
+    with st.expander("更新入场价 / 挂单状态 / 关联订单", expanded=False):
+        st.caption("这里只更新本地交易计划；不会向 OKX 或其他交易所下单、改单或撤单。")
+        with st.form(f"update_trade_order_plan_{selected_id}"):
+            edit_left, edit_mid, edit_right = st.columns(3)
+            entry_type_values = list(ENTRY_ORDER_TYPE_LABELS)
+            status_values = list(PLAN_STATUS_LABELS)
+            with edit_left:
+                edit_entry_type = st.selectbox(
+                    "入场方式",
+                    entry_type_values,
+                    index=entry_type_values.index(selected_entry_type),
+                    format_func=lambda value: ENTRY_ORDER_TYPE_LABELS.get(value, value),
+                )
+                edit_entry_price = st.number_input(
+                    "计划入场价 / 限价",
+                    min_value=0.0,
+                    value=_number_or_none(selected["entry_price"]) or 0.0,
+                    format="%.8f",
+                )
+                edit_trigger_price = st.number_input(
+                    "触发价（条件单可选）",
+                    min_value=0.0,
+                    value=_number_or_none(selected["trigger_price"]) or 0.0,
+                    format="%.8f",
+                )
+            with edit_mid:
+                edit_quantity = st.number_input(
+                    "计划数量（币/合约张数）",
+                    min_value=0.0,
+                    value=_number_or_none(selected["planned_quantity"]) or 0.0,
+                    format="%.8f",
+                )
+                edit_status = st.selectbox(
+                    "计划 / 挂单状态",
+                    status_values,
+                    index=status_values.index(selected_status),
+                    format_func=lambda value: PLAN_STATUS_LABELS.get(value, value),
+                )
+                edit_expires_at = st.text_input("计划到期时间", value=selected["plan_expires_at"] or "")
+            with edit_right:
+                selected_order_label = st.selectbox(
+                    "从已同步订单关联（可选）",
+                    order_labels,
+                    index=order_labels.index(matching_label),
+                )
+                edit_order_id = st.text_input("订单 ID（可手动填写）", value=selected_order_id)
+                use_order_values = st.checkbox(
+                    "用已同步订单回填空的价格/数量，并同步状态",
+                    value=True,
+                )
+            plan_update_saved = st.form_submit_button("保存入场与挂单信息", type="primary", disabled=not admin_access)
+
+        if plan_update_saved and require_admin("更新交易计划挂单信息"):
+            source_order = order_choices.get(selected_order_label)
+            updated_entry_type = edit_entry_type
+            updated_entry_price = _number_or_none(edit_entry_price)
+            updated_trigger_price = _number_or_none(edit_trigger_price)
+            updated_quantity = _number_or_none(edit_quantity)
+            updated_status = edit_status
+            updated_order_id = edit_order_id.strip()
+            if source_order:
+                updated_order_id = str(source_order["order_id"] or "").strip()
+                if use_order_values:
+                    updated_status = _plan_status_from_exchange(source_order["status"])
+                    if updated_entry_price is None:
+                        updated_entry_price = _number_or_none(source_order["price"]) or _number_or_none(source_order["avg_price"])
+                    if updated_quantity is None:
+                        updated_quantity = _number_or_none(source_order["quantity"])
+                    if updated_entry_type == "manual":
+                        updated_entry_type = _entry_type_from_exchange(source_order["order_type"])
+            if updated_entry_type in {"limit", "trigger_limit"} and updated_entry_price is None:
+                st.error("限价单和条件限价单都需要填写计划入场价。")
+            elif updated_entry_type in {"trigger_limit", "trigger_market"} and updated_trigger_price is None:
+                st.error("条件单需要填写触发价。")
+            else:
+                changed = update_trade_note_order_plan(
+                    selected_id,
+                    order_id=updated_order_id,
+                    entry_order_type=updated_entry_type,
+                    entry_price=updated_entry_price,
+                    trigger_price=updated_trigger_price,
+                    planned_quantity=updated_quantity,
+                    plan_status=updated_status,
+                    plan_expires_at=edit_expires_at.strip(),
+                )
+                if changed:
+                    st.success("已更新本地计划和挂单关联；交易所订单没有被修改。")
+                    st.rerun()
+                else:
+                    st.error("未找到要更新的交易计划。")
 
     plan_snapshot = _json_object(selected["market_snapshot_json"])
     if plan_snapshot:
@@ -424,10 +764,14 @@ else:
 
     df = pd.DataFrame([dict(row) for row in notes])
     st.dataframe(
-        df[["id", "created_at", "venue", "symbol", "side", "trade_type", "order_id", "expected_horizon", "plan_status"]].rename(columns={
+        df[[
+            "id", "created_at", "venue", "symbol", "side", "trade_type", "entry_order_type",
+            "entry_price", "trigger_price", "planned_quantity", "order_id", "expected_horizon", "plan_status",
+        ]].rename(columns={
             "id": "ID", "created_at": "记录时间", "venue": "交易所", "symbol": "交易对",
-            "side": "方向", "trade_type": "交易类型", "order_id": "订单ID", "expected_horizon": "预期周期",
-            "plan_status": "计划状态",
+            "side": "方向", "trade_type": "交易类型", "entry_order_type": "入场方式",
+            "entry_price": "计划入场价", "trigger_price": "触发价", "planned_quantity": "计划数量",
+            "order_id": "订单ID", "expected_horizon": "预期周期", "plan_status": "计划状态",
         }),
         use_container_width=True,
         hide_index=True,

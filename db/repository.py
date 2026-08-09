@@ -1668,20 +1668,23 @@ def upsert_trade_fill(fill):
 
 
 def insert_trade_note(venue, symbol, order_id="", side="", thesis="", setup="",
-                      stop_price=None, target_price=None, expected_horizon="", risk_note="",
+                      entry_order_type="manual", entry_price=None, trigger_price=None,
+                      planned_quantity=None, stop_price=None, target_price=None,
+                      expected_horizon="", risk_note="",
                       market_snapshot=None, trade_type="swing", macro_horizon="",
                       analysis_timeframe="", entry_trigger="", time_stop="",
                       plan_status="planned", plan_expires_at="", context_captured_at=""):
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO trade_notes
-               (venue, symbol, order_id, side, thesis, setup, stop_price, target_price,
-                expected_horizon, trade_type, macro_horizon, analysis_timeframe, entry_trigger,
-                time_stop, plan_status, plan_expires_at, context_captured_at, risk_note,
-                market_snapshot_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (venue, symbol, order_id, side, thesis, setup, stop_price, target_price,
-             expected_horizon, trade_type or "swing", macro_horizon or "", analysis_timeframe or "",
+               (venue, symbol, order_id, side, thesis, setup, entry_order_type, entry_price,
+                trigger_price, planned_quantity, stop_price, target_price, expected_horizon,
+                trade_type, macro_horizon, analysis_timeframe, entry_trigger, time_stop,
+                plan_status, plan_expires_at, context_captured_at, risk_note, market_snapshot_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (venue, symbol, order_id, side, thesis, setup, entry_order_type or "manual", entry_price,
+             trigger_price, planned_quantity, stop_price, target_price, expected_horizon,
+             trade_type or "swing", macro_horizon or "", analysis_timeframe or "",
              entry_trigger or "", time_stop or "", plan_status or "planned", plan_expires_at or "",
              context_captured_at or "", risk_note, _json_text(market_snapshot or {})),
         )
@@ -1722,6 +1725,29 @@ def update_trade_note_context(note_id, market_snapshot, context_captured_at=""):
                WHERE id = ?""",
             (_json_text(market_snapshot or {}), context_captured_at or "", note_id),
         )
+
+
+def update_trade_note_order_plan(note_id, *, order_id="", entry_order_type="manual",
+                                 entry_price=None, trigger_price=None, planned_quantity=None,
+                                 plan_status="planned", plan_expires_at=""):
+    """Update a user's planned entry and optional linked read-only order.
+
+    This only edits the local journal.  It never creates, amends, cancels, or
+    otherwise changes an exchange order.
+    """
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE trade_notes
+               SET order_id = ?, entry_order_type = ?, entry_price = ?, trigger_price = ?,
+                   planned_quantity = ?, plan_status = ?, plan_expires_at = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (
+                order_id or "", entry_order_type or "manual", entry_price, trigger_price,
+                planned_quantity, plan_status or "planned", plan_expires_at or "", note_id,
+            ),
+        )
+        return bool(cur.rowcount)
 
 
 def insert_trade_plan_feedback(note_id, model, prompt_version, status, context, feedback,
