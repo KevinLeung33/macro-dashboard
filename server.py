@@ -62,6 +62,7 @@ def main():
     from services.daily_ai_report import save_ai_trend_report
     from services.maintenance import backup_database, runtime_status
     from services.paper_trading import run_paper_trading
+    from services.okx_readonly import sync_okx_trade_execution
     from services.runtime_controls import (
         RateLimitExceeded,
         TaskBusyError,
@@ -101,6 +102,7 @@ def main():
         fast_news_fetcher=fetch_rss,
         health_checker=check_system_health,
         paper_trading_runner=run_paper_trading,
+        trade_execution_sync_runner=sync_okx_trade_execution,
         report_builder=build_scheduled_report,
         notifier=lambda msg: notify(msg, channels),
     )

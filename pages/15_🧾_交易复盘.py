@@ -6,7 +6,9 @@ import pandas as pd
 import streamlit as st
 
 from db.repository import (
+    clear_all_trade_plan_research_data,
     insert_trade_note,
+    link_trade_plan_order,
     query_ai_shadow_plans,
     query_latest_trade_account_snapshot,
     query_paper_order_events,
@@ -15,8 +17,12 @@ from db.repository import (
     query_trade_fills,
     query_trade_notes,
     query_trade_orders,
+    query_trade_plan_order_events,
+    query_trade_plan_order_links,
     query_trade_plan_feedback,
     query_trade_positions,
+    unlink_trade_plan_order,
+    update_trade_note_intent_status,
     update_trade_note_order_plan,
 )
 from db.schema import init_db
@@ -24,10 +30,17 @@ from services.access_control import render_admin_access, require_admin
 from services.ai_shadow_config import shadow_constraints
 from services.ai_shadow_plan import generate_ai_shadow_plan
 from services.paper_trading import cancel_pending_paper_order, run_paper_trading
+from services.runtime_controls import TaskBusyError, hold_task
 from services.trade_review import review_trade_note
 from services.okx_readonly import OKXReadOnlyClient, sync_okx_readonly_account
 from services.trade_plan_context import build_trade_plan_snapshot
 from services.trade_plan_feedback import generate_trade_plan_feedback
+from services.trade_execution import (
+    ORDER_ROLE_LABELS,
+    build_trade_plan_execution,
+    execution_state_label,
+    order_role_label,
+)
 
 
 st.set_page_config(page_title="交易复盘", page_icon="🧾", layout="wide")
@@ -38,6 +51,7 @@ init_db()
 
 st.info(
     "交易计划会保存当时的宏观、新闻、数据新鲜度和 OKX 公开 K 线快照。"
+    "计划可以先不挂单；真实入场、止盈、止损和手动退出订单都从已同步 OKX 订单中关联，并按成交量形成执行链。"
     "“计划环境反馈”由你主动触发，只指出证据、矛盾和风险，不批准、阻止或执行交易；"
     "AI 影子计划生成时不会读取你的方向、价格、仓位、理由或真实订单；"
     "虚拟成交只写本地数据库，OKX 账户同步始终只读。"
@@ -85,6 +99,12 @@ PLAN_STATUS_LABELS = {
     "expired": "已过期",
     "executed": "已执行（旧记录）",
 }
+PLAN_INTENT_STATUS_LABELS = {
+    "active": "计划有效",
+    "paused": "暂缓观察",
+    "abandoned": "已放弃计划",
+    "archived": "已归档",
+}
 PENDING_PLAN_STATUSES = {"planned", "waiting_trigger", "open", "partially_filled"}
 OPEN_EXCHANGE_ORDER_STATUSES = {"live", "partially_filled", "effective"}
 AI_SHADOW_DECISION_LABELS = {
@@ -116,6 +136,16 @@ def _number_or_none(value):
 def _number_label(value):
     value = _number_or_none(value)
     if value is None:
+        return "—"
+    return f"{value:,.8f}".rstrip("0").rstrip(".")
+
+
+def _quantity_label(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if value < 0:
         return "—"
     return f"{value:,.8f}".rstrip("0").rstrip(".")
 
@@ -166,6 +196,31 @@ def _entry_type_from_exchange(order_type):
     return "limit" if value else "manual"
 
 
+def _expected_exchange_side(plan_side, role):
+    plan_side = str(plan_side or "").upper()
+    role = str(role or "").lower()
+    if plan_side not in {"LONG", "SHORT"}:
+        return ""
+    is_entry = role == "entry"
+    if (plan_side == "LONG" and is_entry) or (plan_side == "SHORT" and not is_entry):
+        return "buy"
+    return "sell"
+
+
+def _validate_order_role_for_plan(plan, order, role):
+    """Return a human-readable local validation error, if one is unambiguous."""
+    expected_side = _expected_exchange_side(plan["side"], role)
+    actual_side = str(order.get("side") or "").lower()
+    if expected_side and actual_side and actual_side != expected_side:
+        return (
+            f"该订单方向为 {actual_side}，与计划 {plan['side']} 的"
+            f"{order_role_label(role)}方向不匹配（预期 {expected_side}）。"
+        )
+    if role == "entry" and bool(order.get("reduce_only")):
+        return "reduce_only 订单只能减仓，不能作为本计划的入场订单。"
+    return ""
+
+
 st.subheader("OKX 只读账户与市场")
 okx_client = OKXReadOnlyClient()
 st.caption("只读取跨币种保证金账户、持仓、挂单/历史订单、成交和公开 K 线；API Key 必须只有 Read 权限。")
@@ -175,8 +230,11 @@ with sync_col:
 if sync_clicked and require_admin("同步 OKX 账户"):
     with st.spinner("读取 OKX 账户、持仓、订单和成交……"):
         try:
-            st.session_state["okx_sync_result"] = sync_okx_readonly_account(okx_client)
+            with hold_task("okx_trade_sync"):
+                st.session_state["okx_sync_result"] = sync_okx_readonly_account(okx_client)
             st.success("OKX 只读数据已同步。")
+        except TaskBusyError:
+            st.info("OKX 自动执行同步正在运行，请稍后再试。")
         except Exception as exc:
             st.error(f"OKX 同步失败：{exc}")
 
@@ -187,6 +245,12 @@ account_label = os.getenv("OKX_ACCOUNT_LABEL", "main").strip() or "main"
 snapshot = query_latest_trade_account_snapshot("OKX", account_label)
 positions = query_trade_positions("OKX", account_label, limit=100)
 orders = query_trade_orders("OKX", account_label, limit=100)
+active_orders = query_trade_orders(
+    "OKX",
+    account_label,
+    limit=100,
+    statuses=OPEN_EXCHANGE_ORDER_STATUSES,
+)
 fills = query_trade_fills("OKX", account_label, limit=200)
 paper_orders = query_paper_orders(limit=200)
 shadow_plans = query_ai_shadow_plans(limit=200)
@@ -234,10 +298,7 @@ if positions:
 else:
     st.caption("当前没有已同步的非零持仓。")
 
-pending_orders = [
-    dict(row) for row in orders
-    if str(row["status"] or "").lower() in OPEN_EXCHANGE_ORDER_STATUSES
-]
+pending_orders = _row_dicts(active_orders)
 if pending_orders:
     st.markdown("**当前挂单（OKX 只读同步）**")
     pending_order_df = pd.DataFrame(pending_orders)
@@ -472,11 +533,7 @@ with st.form("trade_note_form", clear_on_submit=False):
         macro_horizon = st.selectbox("宏观判断周期", ["日内", "1-3天", "1-2周", "1-3月", "更长", "不适用"])
     with c4:
         analysis_timeframe = st.selectbox("主要技术周期", ["5m", "15m", "1H", "4H", "1D", "其他"])
-        plan_status = st.selectbox(
-            "计划 / 挂单状态",
-            list(PLAN_STATUS_LABELS),
-            format_func=lambda value: PLAN_STATUS_LABELS.get(value, value),
-        )
+        st.caption("保存后可选择已同步的 OKX 订单；不关联挂单也可以先保存计划。")
     c5, c6, c7, c8 = st.columns(4)
     with c5:
         entry_order_type = st.selectbox(
@@ -492,8 +549,8 @@ with st.form("trade_note_form", clear_on_submit=False):
         stop_price = st.number_input("价格止损（可选）", min_value=0.0, value=0.0, format="%.8f")
         target_price = st.number_input("目标价（可选）", min_value=0.0, value=0.0, format="%.8f")
     with c8:
-        order_id = st.text_input("关联订单 ID（可稍后补）")
         plan_expires_at = st.text_input("计划到期时间（可选）", placeholder="例如 2026-08-09 08:00")
+        st.caption("不手填订单 ID。保存后在计划执行链中关联真实订单。")
     c9, c10 = st.columns(2)
     with c9:
         entry_trigger = st.text_input("明确入场触发", placeholder="例如 1H 跌破后反抽不过")
@@ -516,8 +573,6 @@ if saved and require_admin("保存交易记录"):
     elif entry_order_type in {"trigger_limit", "trigger_market"} and trigger_price_value is None:
         st.error("条件单需要填写触发价。")
     else:
-        if plan_status in {"open", "partially_filled"} and not order_id.strip():
-            st.warning("已记录为挂单/部分成交，但尚未关联交易所订单 ID；可在计划详情中后补。")
         plan_payload = {
             "venue": venue, "symbol": clean_symbol, "side": side, "trade_type": trade_type,
             "expected_horizon": horizon, "macro_horizon": macro_horizon,
@@ -526,8 +581,8 @@ if saved and require_admin("保存交易记录"):
             "entry_price": entry_price_value,
             "trigger_price": trigger_price_value,
             "planned_quantity": planned_quantity_value,
-            "plan_status": plan_status,
-            "order_id": order_id.strip(),
+            "plan_status": "planned",
+            "order_id": "",
         }
         with st.spinner("正在保存计划当时的宏观、新闻和公开市场快照……"):
             try:
@@ -540,7 +595,7 @@ if saved and require_admin("保存交易记录"):
             note_id = insert_trade_note(
                 venue=venue,
                 symbol=clean_symbol,
-                order_id=order_id.strip(),
+                order_id="",
                 side=side,
                 thesis=thesis.strip(),
                 setup=setup.strip(),
@@ -558,7 +613,8 @@ if saved and require_admin("保存交易记录"):
                 analysis_timeframe=analysis_timeframe,
                 entry_trigger=entry_trigger.strip(),
                 time_stop=time_stop.strip(),
-                plan_status=plan_status,
+                plan_status="planned",
+                plan_intent_status="active",
                 plan_expires_at=plan_expires_at.strip(),
                 context_captured_at=plan_snapshot.get("captured_at", ""),
             )
@@ -568,6 +624,32 @@ if saved and require_admin("保存交易记录"):
 st.divider()
 st.subheader("已记录交易")
 notes = query_trade_notes(limit=100)
+with st.expander("🗑️ 清除本地交易计划研究数据", expanded=False):
+    st.warning(
+        "此操作只删除本地交易计划、环境反馈、AI 点评、AI 影子计划、虚拟订单和计划—订单关联。"
+        "不会删除 OKX 的订单、成交、持仓，也不会调用撤单。"
+    )
+    clear_phrase = st.text_input(
+        "输入“清除全部本地计划”后才能执行",
+        key="clear_all_trade_plan_research_phrase",
+    )
+    if st.button(
+        "🗑️ 清除全部本地计划研究数据",
+        type="primary",
+        disabled=not admin_access,
+        key="clear_all_trade_plan_research",
+    ):
+        if clear_phrase.strip() != "清除全部本地计划":
+            st.error("请准确输入确认文字后再执行。")
+        elif require_admin("清除全部本地交易计划研究数据"):
+            result = clear_all_trade_plan_research_data()
+            st.session_state.pop("selected_trade_note_id", None)
+            st.success(
+                f"已清除 {result['plans']} 条本地计划、{result['shadow_plans']} 条 AI 影子计划和 "
+                f"{result['paper_orders']} 笔虚拟订单；OKX 只读缓存未删除。"
+            )
+            st.rerun()
+
 if not notes:
     st.info("还没有交易记录。")
 else:
@@ -582,13 +664,13 @@ else:
     selected_id = note_options[selected_label]
     st.session_state["selected_trade_note_id"] = selected_id
     selected = next(row for row in notes if row["id"] == selected_id)
-    selected_status = str(selected["plan_status"] or "planned").lower()
-    if selected_status not in PLAN_STATUS_LABELS:
-        selected_status = "planned"
     selected_entry_type = _entry_type_from_exchange(selected["entry_order_type"])
-    selected_order_id = (selected["order_id"] or "").strip()
-    linked_order_rows = query_trade_orders(order_id=selected_order_id, limit=1) if selected_order_id else []
-    linked_order = dict(linked_order_rows[0]) if linked_order_rows else None
+    selected_intent_status = str(selected["plan_intent_status"] or "active").lower()
+    if selected_intent_status not in PLAN_INTENT_STATUS_LABELS:
+        selected_intent_status = "active"
+    execution = build_trade_plan_execution(selected_id)
+    execution_links = execution["links"]
+    execution_events = _row_dicts(query_trade_plan_order_events(selected_id, limit=100))
 
     detail_left, detail_right = st.columns(2)
     with detail_left:
@@ -611,45 +693,147 @@ else:
             f"数量：{_number_label(selected['planned_quantity'])}"
         )
         st.caption(
-            f"状态：{PLAN_STATUS_LABELS.get(selected_status, selected_status)} · "
-            f"到期：{selected['plan_expires_at'] or '—'} · "
-            f"订单：{selected_order_id or '尚未关联'}"
+            f"计划意图：{PLAN_INTENT_STATUS_LABELS.get(selected_intent_status, selected_intent_status)} · "
+            f"实际执行：{execution['state_label']} · 到期：{selected['plan_expires_at'] or '—'}"
         )
-        if linked_order:
-            st.info(
-                "已同步订单："
-                f"{linked_order['status'] or '—'} · {linked_order['order_type'] or '—'} · "
-                f"价格 {_number_label(linked_order['price'])} · "
-                f"已成交 {_number_label(linked_order['filled_quantity'])}/"
-                f"{_number_label(linked_order['quantity'])}"
-            )
-        elif selected_order_id:
-            st.caption("该订单 ID 尚未出现在当前只读同步记录中；同步 OKX 后会自动用于展示和复盘。")
 
+    st.markdown("### 真实执行链（OKX 只读）")
+    st.caption("实际执行按已关联订单 ID 的累计成交量计算；账户同交易对总仓位只作核对，不会被自动归因给某一计划。")
+    execution_cols = st.columns(5)
+    execution_cols[0].metric("执行状态", execution["state_label"])
+    execution_cols[1].metric("入场订单", str(execution["entry_order_count"]))
+    execution_cols[2].metric("归属入场成交", _quantity_label(execution["entry_filled_quantity"]))
+    execution_cols[3].metric("归属退出成交", _quantity_label(execution["exit_filled_quantity"]))
+    execution_cols[4].metric("本计划归属仓位", _quantity_label(execution["attributed_open_quantity"]))
+    for warning in execution["warnings"]:
+        st.warning(warning)
+
+    if execution_links:
+        link_df = pd.DataFrame(execution_links)
+        link_df["角色"] = link_df["role"].map(order_role_label)
+        link_df["交易所状态"] = link_df["effective_status"].replace("", "未同步")
+        link_df["累计成交"] = link_df["effective_filled_quantity"].map(_quantity_label)
+        link_df["订单数量"] = link_df["order_quantity"].map(_quantity_label)
+        link_columns = [
+            "角色", "order_id", "order_side", "order_type", "交易所状态", "订单数量", "累计成交",
+            "order_avg_price", "order_reduce_only", "order_updated_at", "linked_at",
+        ]
+        st.dataframe(
+            link_df[[column for column in link_columns if column in link_df.columns]].rename(columns={
+                "order_id": "订单 ID", "order_side": "方向", "order_type": "订单类型",
+                "order_avg_price": "成交均价", "order_reduce_only": "仅减仓",
+                "order_updated_at": "交易所更新时间", "linked_at": "关联时间",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("该计划尚未关联真实订单。先保存计划是正常的；实际挂单出现后再从已同步订单中选择即可。")
+
+    all_plan_links = _row_dicts(query_trade_plan_order_links(venue="OKX", account_label=account_label, limit=500))
+    linked_elsewhere = {
+        str(item["order_id"]): int(item["note_id"])
+        for item in all_plan_links
+        if int(item["note_id"]) != int(selected_id)
+    }
     matching_synced_orders = [
         dict(row) for row in orders
         if str(selected["venue"] or "").upper() == "OKX"
         and _symbol_key(row["symbol"]) == _symbol_key(selected["symbol"])
+        and str(row["order_id"] or "") not in linked_elsewhere
     ]
-    order_choices = {"不从已同步订单选择（手动填写下方订单 ID）": None}
+    candidate_orders = {"请选择一笔已同步的 OKX 订单": None}
     for order in matching_synced_orders:
-        label = (
-            f"#{order['order_id']} · {order['side'] or '—'} {order['order_type'] or '—'} · "
-            f"{order['status'] or '—'} · 价格 {_number_label(order['price'])}"
+        order_id = str(order["order_id"] or "")
+        already_linked = next(
+            (item for item in execution_links if str(item["order_id"]) == order_id),
+            None,
         )
-        order_choices[label] = order
-    order_labels = list(order_choices)
-    matching_label = next(
-        (label for label, order in order_choices.items() if order and order["order_id"] == selected_order_id),
-        order_labels[0],
-    )
+        suffix = f" · 已关联为{order_role_label(already_linked['role'])}" if already_linked else ""
+        label = (
+            f"#{order_id} · {order['side'] or '—'} {order['order_type'] or '—'} · "
+            f"{order['status'] or '—'} · 已成交 {_quantity_label(order['filled_quantity'])}/"
+            f"{_quantity_label(order['quantity'])}{suffix}"
+        )
+        candidate_orders[label] = order
 
-    with st.expander("更新入场价 / 挂单状态 / 关联订单", expanded=False):
-        st.caption("这里只更新本地交易计划；不会向 OKX 或其他交易所下单、改单或撤单。")
-        with st.form(f"update_trade_order_plan_{selected_id}"):
+    with st.expander("关联 / 管理真实 OKX 订单", expanded=not execution_links):
+        st.caption("仅可从已同步订单中选择。关联不会向 OKX 下单、撤单或改单；同一订单不能同时归属两条计划。")
+        st.caption("OKX 独立条件/Algo 止盈止损单会在触发后生成实际订单；本版可在实际订单出现后关联，未触发的 Algo 单暂不自动归因。")
+        if str(selected["venue"] or "").upper() != "OKX":
+            st.info("当前只有 OKX 只读订单可以关联；请先将计划交易所设为 OKX。")
+        elif len(candidate_orders) == 1:
+            st.info("尚未找到同交易对、且未归属其他计划的同步订单。请先同步 OKX，或在交易所创建订单后稍等。")
+        else:
+            with st.form(f"link_trade_plan_order_{selected_id}"):
+                link_role = st.selectbox(
+                    "这笔订单在本计划中的角色",
+                    list(ORDER_ROLE_LABELS),
+                    format_func=order_role_label,
+                )
+                selected_candidate_label = st.selectbox("选择已同步订单", list(candidate_orders))
+                link_note = st.text_input("关联说明（可选）", placeholder="例如：第一笔回调入场 / 手动减仓")
+                link_saved = st.form_submit_button("关联到当前计划", type="primary", disabled=not admin_access)
+            if link_saved and require_admin("关联已同步 OKX 订单"):
+                candidate = candidate_orders.get(selected_candidate_label)
+                if not candidate:
+                    st.error("请先选择一笔已同步订单。")
+                else:
+                    validation_error = _validate_order_role_for_plan(selected, candidate, link_role)
+                    if validation_error:
+                        st.error(validation_error)
+                    else:
+                        try:
+                            link_trade_plan_order(
+                                selected_id,
+                                venue="OKX",
+                                account_label=account_label,
+                                order_id=candidate["order_id"],
+                                role=link_role,
+                                link_note=link_note.strip(),
+                            )
+                            st.success("已关联本地计划；真实 OKX 订单没有被修改。")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"关联订单失败：{exc}")
+        if execution_links:
+            unlink_choices = {
+                f"#{item['order_id']} · {order_role_label(item['role'])} · {item['effective_status'] or '未同步'}": item
+                for item in execution_links
+            }
+            unlink_label = st.selectbox("解除错误关联", list(unlink_choices), key=f"unlink_plan_order_{selected_id}")
+            if st.button("解除这条本地订单关联", disabled=not admin_access, key=f"unlink_plan_order_button_{selected_id}"):
+                if require_admin("解除本地计划订单关联"):
+                    target_link = unlink_choices[unlink_label]
+                    if unlink_trade_plan_order(selected_id, target_link["id"]):
+                        st.success("已解除本地关联；真实 OKX 订单和成交没有被修改。")
+                        st.rerun()
+                    else:
+                        st.error("未找到要解除的本地关联。")
+
+    if execution_events:
+        with st.expander("查看计划执行状态时间线", expanded=False):
+            event_df = pd.DataFrame(execution_events)
+            event_columns = [
+                "created_at", "event_type", "role", "order_id", "from_status", "to_status",
+                "previous_filled_quantity", "filled_quantity", "avg_price", "exchange_updated_at",
+            ]
+            st.dataframe(
+                event_df[[column for column in event_columns if column in event_df.columns]].rename(columns={
+                    "created_at": "记录时间", "event_type": "事件", "role": "订单角色",
+                    "order_id": "订单 ID", "from_status": "原状态", "to_status": "新状态",
+                    "previous_filled_quantity": "原累计成交", "filled_quantity": "新累计成交",
+                    "avg_price": "成交均价", "exchange_updated_at": "交易所更新时间",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with st.expander("编辑计划意图与入场规则", expanded=False):
+        st.caption("这里只编辑你的计划规则和研究意图。真实执行状态由已关联订单与成交自动计算。")
+        with st.form(f"update_trade_plan_rules_{selected_id}"):
             edit_left, edit_mid, edit_right = st.columns(3)
             entry_type_values = list(ENTRY_ORDER_TYPE_LABELS)
-            status_values = list(PLAN_STATUS_LABELS)
             with edit_left:
                 edit_entry_type = st.selectbox(
                     "入场方式",
@@ -676,61 +860,40 @@ else:
                     value=_number_or_none(selected["planned_quantity"]) or 0.0,
                     format="%.8f",
                 )
-                edit_status = st.selectbox(
-                    "计划 / 挂单状态",
-                    status_values,
-                    index=status_values.index(selected_status),
-                    format_func=lambda value: PLAN_STATUS_LABELS.get(value, value),
-                )
                 edit_expires_at = st.text_input("计划到期时间", value=selected["plan_expires_at"] or "")
             with edit_right:
-                selected_order_label = st.selectbox(
-                    "从已同步订单关联（可选）",
-                    order_labels,
-                    index=order_labels.index(matching_label),
+                intent_values = list(PLAN_INTENT_STATUS_LABELS)
+                edit_intent_status = st.selectbox(
+                    "计划意图状态",
+                    intent_values,
+                    index=intent_values.index(selected_intent_status),
+                    format_func=lambda value: PLAN_INTENT_STATUS_LABELS.get(value, value),
                 )
-                edit_order_id = st.text_input("订单 ID（可手动填写）", value=selected_order_id)
-                use_order_values = st.checkbox(
-                    "用已同步订单回填空的价格/数量，并同步状态",
-                    value=True,
-                )
-            plan_update_saved = st.form_submit_button("保存入场与挂单信息", type="primary", disabled=not admin_access)
+                st.caption("放弃/归档不会撤销 OKX 订单；需要先在交易所自行处理真实订单。")
+            plan_update_saved = st.form_submit_button("保存计划规则", type="primary", disabled=not admin_access)
 
-        if plan_update_saved and require_admin("更新交易计划挂单信息"):
-            source_order = order_choices.get(selected_order_label)
-            updated_entry_type = edit_entry_type
+        if plan_update_saved and require_admin("更新交易计划规则"):
             updated_entry_price = _number_or_none(edit_entry_price)
             updated_trigger_price = _number_or_none(edit_trigger_price)
             updated_quantity = _number_or_none(edit_quantity)
-            updated_status = edit_status
-            updated_order_id = edit_order_id.strip()
-            if source_order:
-                updated_order_id = str(source_order["order_id"] or "").strip()
-                if use_order_values:
-                    updated_status = _plan_status_from_exchange(source_order["status"])
-                    if updated_entry_price is None:
-                        updated_entry_price = _number_or_none(source_order["price"]) or _number_or_none(source_order["avg_price"])
-                    if updated_quantity is None:
-                        updated_quantity = _number_or_none(source_order["quantity"])
-                    if updated_entry_type == "manual":
-                        updated_entry_type = _entry_type_from_exchange(source_order["order_type"])
-            if updated_entry_type in {"limit", "trigger_limit"} and updated_entry_price is None:
+            if edit_entry_type in {"limit", "trigger_limit"} and updated_entry_price is None:
                 st.error("限价单和条件限价单都需要填写计划入场价。")
-            elif updated_entry_type in {"trigger_limit", "trigger_market"} and updated_trigger_price is None:
+            elif edit_entry_type in {"trigger_limit", "trigger_market"} and updated_trigger_price is None:
                 st.error("条件单需要填写触发价。")
             else:
                 changed = update_trade_note_order_plan(
                     selected_id,
-                    order_id=updated_order_id,
-                    entry_order_type=updated_entry_type,
+                    order_id=selected["order_id"] or "",
+                    entry_order_type=edit_entry_type,
                     entry_price=updated_entry_price,
                     trigger_price=updated_trigger_price,
                     planned_quantity=updated_quantity,
-                    plan_status=updated_status,
+                    plan_status=selected["plan_status"] or "planned",
                     plan_expires_at=edit_expires_at.strip(),
                 )
-                if changed:
-                    st.success("已更新本地计划和挂单关联；交易所订单没有被修改。")
+                intent_changed = update_trade_note_intent_status(selected_id, edit_intent_status)
+                if changed or intent_changed:
+                    st.success("已更新本地计划规则；真实 OKX 订单没有被修改。")
                     st.rerun()
                 else:
                     st.error("未找到要更新的交易计划。")
@@ -746,11 +909,6 @@ else:
         with st.expander("查看计划创建时的数据快照", expanded=False):
             st.json(plan_snapshot)
 
-    st.markdown("### 🤖 AI 独立影子计划（本地虚拟订单）")
-    st.caption(
-        "生成阶段只传入交易对与一份新鲜市场快照，不传入你的方向、入场价、止损、仓位、理由或真实订单。"
-        "生成完成后才做对比；影子订单只写本地数据库。"
-    )
     selected_shadow_plans = [
         dict(row) for row in shadow_plans if int(row["note_id"]) == int(selected_id)
     ]
@@ -762,255 +920,346 @@ else:
         item for item in selected_paper_orders
         if item.get("status") in {"waiting_trigger", "pending", "open"}
     ]
-    shadow_action_col, paper_check_col, shadow_info_col = st.columns([1.35, 1.1, 2.55])
-    with shadow_action_col:
-        generate_shadow = st.button(
-            "✨ 生成独立 AI 影子计划",
-            type="primary",
-            disabled=(not admin_access) or bool(active_paper_orders),
-            key=f"ai_shadow_plan_{selected_id}",
+    latest_shadow = selected_shadow_plans[0] if selected_shadow_plans else None
+    latest_decision = _json_object(latest_shadow["decision_json"]) if latest_shadow else {}
+    latest_comparison = _json_object(latest_shadow["comparison_json"]) if latest_shadow else {}
+    latest_paper = next(
+        (item for item in selected_paper_orders if item["shadow_plan_id"] == latest_shadow["id"]),
+        None,
+    ) if latest_shadow else None
+    plan_feedback_history = query_trade_plan_feedback(note_id=selected_id, limit=10)
+    latest_plan_feedback = _json_object(plan_feedback_history[0]["feedback_json"]) if plan_feedback_history else {}
+    reviews = query_trade_ai_reviews(note_id=selected_id, limit=10)
+    latest_review = reviews[0] if reviews else None
+    latest_review_payload = _json_object(latest_review["review_json"]) if latest_review else {}
+
+    alignment_map = {
+        "supportive": "支持", "neutral": "中性", "headwind": "存在逆风",
+        "mixed": "多空交织", "insufficient_data": "数据不足",
+    }
+    classification_map = {
+        "trend_following": "顺势交易", "countertrend_tactical": "逆趋势战术交易",
+        "event_driven": "事件驱动", "range": "区间/均值回归", "unclear": "类型不明确",
+    }
+    verdict_map = {
+        "reasonable": "相对合理",
+        "mixed": "有得有失",
+        "unreasonable": "存在明显问题",
+        "insufficient_data": "数据不足",
+    }
+
+    if latest_shadow:
+        shadow_summary = AI_SHADOW_DECISION_LABELS.get(latest_shadow["decision"], latest_shadow["decision"])
+        shadow_status = PAPER_ORDER_STATUS_LABELS.get(
+            (latest_paper or {}).get("status", latest_shadow["status"]),
+            (latest_paper or {}).get("status", latest_shadow["status"]),
         )
-    with paper_check_col:
-        check_paper = st.button(
-            "🔄 检查虚拟订单",
-            disabled=not admin_access,
-            key=f"ai_paper_check_{selected_id}",
-        )
-    with shadow_info_col:
-        constraints = shadow_constraints()
-        st.caption(
-            f"虚拟账户 ${constraints['virtual_equity_usd']:,.0f} · 单笔最大风险 {constraints['max_risk_pct']:.2%} · "
-            f"最低 R/R {constraints['min_risk_reward']:.2f} · 费用 {constraints['fee_bps']:.1f}bp · "
-            f"滑点 {constraints['slippage_bps']:.1f}bp"
-        )
-        if active_paper_orders:
-            st.caption("当前已有未结束的 AI 虚拟订单；为避免重复计分，请先等待其结束。")
-
-    if generate_shadow and require_admin("生成独立 AI 影子计划"):
-        with st.spinner("AI 正在基于独立市场快照生成虚拟计划……"):
-            try:
-                generated = generate_ai_shadow_plan(selected_id)
-                st.session_state["ai_shadow_last_result"] = generated
-                st.success("AI 影子计划已保存；它没有读取你的计划字段，也没有发送任何真实订单。")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"AI 影子计划生成失败：{exc}")
-
-    if check_paper and require_admin("检查 AI 虚拟订单"):
-        with st.spinner("正在读取 OKX 公开 1 分钟 K 线并推进本地虚拟订单……"):
-            try:
-                result = run_paper_trading()
-                st.session_state["ai_paper_last_result"] = result
-                st.success(f"已检查 {result.get('checked', 0)} 笔虚拟订单，状态变化 {result.get('changed', 0)} 笔。")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"虚拟订单检查失败：{exc}")
-
-    latest_paper_result = st.session_state.get("ai_paper_last_result") or {}
-    if latest_paper_result.get("errors"):
-        st.caption("最近一次虚拟订单检查有数据读取问题：" + "；".join(latest_paper_result["errors"][:2]))
-
-    if not selected_shadow_plans:
-        st.info("尚未生成独立 AI 影子计划。它可以选择不交易、观察、限价挂单或条件单。")
+        shadow_caption = f"虚拟状态：{shadow_status}"
     else:
-        latest_shadow = selected_shadow_plans[0]
-        latest_decision = _json_object(latest_shadow["decision_json"])
-        latest_comparison = _json_object(latest_shadow["comparison_json"])
-        latest_paper = next(
-            (item for item in selected_paper_orders if item["shadow_plan_id"] == latest_shadow["id"]),
-            None,
-        )
-        shadow_cols = st.columns(5)
-        shadow_cols[0].metric("AI 决策", AI_SHADOW_DECISION_LABELS.get(latest_shadow["decision"], latest_shadow["decision"]))
-        shadow_cols[1].metric("方向", str(latest_shadow["side"] or "flat").upper())
-        shadow_cols[2].metric("虚拟入场", _number_label(latest_shadow["entry_price"]))
-        shadow_cols[3].metric("风险收益比", "—" if latest_shadow["risk_reward"] is None else f"{latest_shadow['risk_reward']:.2f}")
-        shadow_cols[4].metric(
-            "虚拟状态",
-            PAPER_ORDER_STATUS_LABELS.get(
-                (latest_paper or {}).get("status", latest_shadow["status"]),
-                (latest_paper or {}).get("status", latest_shadow["status"]),
-            ),
-        )
-        st.write(latest_shadow["rationale"] or latest_decision.get("no_trade_reason") or "AI 未提供理由。")
+        shadow_summary = "未生成"
+        shadow_caption = "尚无独立 AI 判断"
+    if plan_feedback_history:
+        feedback_summary = alignment_map.get(latest_plan_feedback.get("macro_alignment"), "数据不足")
+        feedback_caption = f"技术：{alignment_map.get(latest_plan_feedback.get('technical_alignment'), '数据不足')} · 最近 {str(plan_feedback_history[0]['created_at'])[:16]}"
+    else:
+        feedback_summary = "未生成"
+        feedback_caption = "尚无环境反馈"
+    if latest_review:
+        review_summary = verdict_map.get(latest_review_payload.get("verdict"), "数据不足")
+        review_caption = f"共 {len(reviews)} 条 · 最近 {str(latest_review['created_at'])[:16]}"
+    else:
+        review_summary = "未生成"
+        review_caption = "尚无 AI 点评"
+
+    st.markdown("### 本计划的 AI 辅助")
+    st.caption("以下内容仅属于当前选择的交易计划；标题保留最新状态，详情默认折叠。")
+    summary_cols = st.columns(3)
+    summary_cols[0].metric("AI 影子", shadow_summary)
+    summary_cols[0].caption(shadow_caption)
+    summary_cols[1].metric("环境反馈", feedback_summary)
+    summary_cols[1].caption(feedback_caption)
+    summary_cols[2].metric("AI 点评", review_summary)
+    summary_cols[2].caption(review_caption)
+
+    expand_shadow_once = bool(st.session_state.pop(f"expand_ai_shadow_{selected_id}", False))
+    expand_feedback_once = bool(st.session_state.pop(f"expand_plan_feedback_{selected_id}", False))
+    expand_review_once = bool(st.session_state.pop(f"expand_ai_review_{selected_id}", False))
+
+    with st.expander(
+        f"🤖 AI 独立影子计划 · {shadow_summary} · {shadow_caption}",
+        expanded=bool(active_paper_orders) or expand_shadow_once,
+    ):
         st.caption(
-            f"AI 快照：{str(latest_shadow['created_at'])[:19]} · 周期：{latest_shadow['analysis_timeframe'] or '—'} · "
-            f"预期持仓：{latest_shadow['expected_horizon'] or '—'} · 置信度：{(latest_shadow['confidence'] or 0):.0%}"
+            "生成阶段只传入交易对与一份新鲜市场快照，不传入你的方向、入场价、止损、仓位、理由或真实订单。"
+            "生成完成后才做对比；影子订单只写本地数据库。"
         )
-        if latest_shadow["decision"] in {"no_trade", "watch"}:
-            st.caption("AI 没有创建虚拟订单；“不交易”会被保留进长期统计，不能被当成缺失样本。")
-        if latest_paper:
-            st.caption(
-                f"虚拟订单 #{latest_paper['id']} · 数量 {_number_label(latest_paper['quantity'])} · "
-                f"止损 {_number_label(latest_paper['stop_price'])} · 目标 {_number_label(latest_paper['target_price'])} · "
-                f"挂单到期 {latest_paper['expires_at'] or '—'} · 时间止损 {latest_paper['time_stop_at'] or '—'}"
+        shadow_action_col, paper_check_col, shadow_info_col = st.columns([1.35, 1.1, 2.55])
+        with shadow_action_col:
+            generate_shadow = st.button(
+                "✨ 生成独立 AI 影子计划",
+                type="primary",
+                disabled=(not admin_access) or bool(active_paper_orders),
+                key=f"ai_shadow_plan_{selected_id}",
             )
-            if latest_paper["status"] == "closed":
-                net_pnl = latest_paper["net_pnl_usd"]
-                r_multiple = latest_paper["r_multiple"]
+        with paper_check_col:
+            check_paper = st.button(
+                "🔄 检查虚拟订单",
+                disabled=not admin_access,
+                key=f"ai_paper_check_{selected_id}",
+            )
+        with shadow_info_col:
+            constraints = shadow_constraints()
+            st.caption(
+                f"虚拟账户 ${constraints['virtual_equity_usd']:,.0f} · 单笔最大风险 {constraints['max_risk_pct']:.2%} · "
+                f"最低 R/R {constraints['min_risk_reward']:.2f} · 费用 {constraints['fee_bps']:.1f}bp · "
+                f"滑点 {constraints['slippage_bps']:.1f}bp"
+            )
+            if active_paper_orders:
+                st.caption("当前已有未结束的 AI 虚拟订单；为避免重复计分，请先等待其结束。")
+
+        if generate_shadow and require_admin("生成独立 AI 影子计划"):
+            with st.spinner("AI 正在基于独立市场快照生成虚拟计划……"):
+                try:
+                    generated = generate_ai_shadow_plan(selected_id)
+                    st.session_state["ai_shadow_last_result"] = generated
+                    st.session_state[f"expand_ai_shadow_{selected_id}"] = True
+                    st.success("AI 影子计划已保存；它没有读取你的计划字段，也没有发送任何真实订单。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"AI 影子计划生成失败：{exc}")
+
+        if check_paper and require_admin("检查 AI 虚拟订单"):
+            with st.spinner("正在读取 OKX 公开 1 分钟 K 线并推进本地虚拟订单……"):
+                try:
+                    result = run_paper_trading()
+                    st.session_state["ai_paper_last_result"] = result
+                    st.session_state[f"expand_ai_shadow_{selected_id}"] = True
+                    st.success(f"已检查 {result.get('checked', 0)} 笔虚拟订单，状态变化 {result.get('changed', 0)} 笔。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"虚拟订单检查失败：{exc}")
+
+        latest_paper_result = st.session_state.get("ai_paper_last_result") or {}
+        if latest_paper_result.get("errors"):
+            st.caption("最近一次虚拟订单检查有数据读取问题：" + "；".join(latest_paper_result["errors"][:2]))
+
+        if not latest_shadow:
+            st.info("尚未生成独立 AI 影子计划。它可以选择不交易、观察、限价挂单或条件单。")
+        else:
+            latest_shadow = selected_shadow_plans[0]
+            shadow_cols = st.columns(5)
+            shadow_cols[0].metric("AI 决策", AI_SHADOW_DECISION_LABELS.get(latest_shadow["decision"], latest_shadow["decision"]))
+            shadow_cols[1].metric("方向", str(latest_shadow["side"] or "flat").upper())
+            shadow_cols[2].metric("虚拟入场", _number_label(latest_shadow["entry_price"]))
+            shadow_cols[3].metric("风险收益比", "—" if latest_shadow["risk_reward"] is None else f"{latest_shadow['risk_reward']:.2f}")
+            shadow_cols[4].metric(
+                "虚拟状态",
+                PAPER_ORDER_STATUS_LABELS.get(
+                    (latest_paper or {}).get("status", latest_shadow["status"]),
+                    (latest_paper or {}).get("status", latest_shadow["status"]),
+                ),
+            )
+            st.write(latest_shadow["rationale"] or latest_decision.get("no_trade_reason") or "AI 未提供理由。")
+            st.caption(
+                f"AI 快照：{str(latest_shadow['created_at'])[:19]} · 周期：{latest_shadow['analysis_timeframe'] or '—'} · "
+                f"预期持仓：{latest_shadow['expected_horizon'] or '—'} · 置信度：{(latest_shadow['confidence'] or 0):.0%}"
+            )
+            if latest_shadow["decision"] in {"no_trade", "watch"}:
+                st.caption("AI 没有创建虚拟订单；“不交易”会被保留进长期统计，不能被当成缺失样本。")
+            if latest_paper:
                 st.caption(
-                    f"已按 {latest_paper['close_reason'] or '—'} 平仓 · 净虚拟盈亏 "
-                    f"${(net_pnl or 0):+,.2f} · R 倍数 {'—' if r_multiple is None else f'{r_multiple:+.2f}'}"
+                    f"虚拟订单 #{latest_paper['id']} · 数量 {_number_label(latest_paper['quantity'])} · "
+                    f"止损 {_number_label(latest_paper['stop_price'])} · 目标 {_number_label(latest_paper['target_price'])} · "
+                    f"挂单到期 {latest_paper['expires_at'] or '—'} · 时间止损 {latest_paper['time_stop_at'] or '—'}"
                 )
-            if latest_paper["status"] in {"waiting_trigger", "pending"}:
-                if st.button(
-                    "取消这笔本地虚拟挂单",
-                    disabled=not admin_access,
-                    key=f"cancel_ai_paper_{latest_paper['id']}",
-                ) and require_admin("取消 AI 虚拟挂单"):
+                if latest_paper["status"] == "closed":
+                    net_pnl = latest_paper["net_pnl_usd"]
+                    r_multiple = latest_paper["r_multiple"]
+                    st.caption(
+                        f"已按 {latest_paper['close_reason'] or '—'} 平仓 · 净虚拟盈亏 "
+                        f"${(net_pnl or 0):+,.2f} · R 倍数 {'—' if r_multiple is None else f'{r_multiple:+.2f}'}"
+                    )
+                if latest_paper["status"] in {"waiting_trigger", "pending"}:
+                    if st.button(
+                        "取消这笔本地虚拟挂单",
+                        disabled=not admin_access,
+                        key=f"cancel_ai_paper_{latest_paper['id']}",
+                    ) and require_admin("取消 AI 虚拟挂单"):
+                        try:
+                            cancel_pending_paper_order(latest_paper["id"])
+                            st.session_state[f"expand_ai_shadow_{selected_id}"] = True
+                            st.success("已取消本地虚拟挂单；真实 OKX 订单没有被触碰。")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"取消虚拟挂单失败：{exc}")
+                events = query_paper_order_events(latest_paper["id"], limit=20)
+                if events:
+                    event_df = pd.DataFrame(_row_dicts(events))
+                    with st.container():
+                        st.markdown("**AI 虚拟订单事件**")
+                        st.dataframe(
+                            event_df[[column for column in ("event_at", "event_type", "from_status", "to_status", "price", "reason") if column in event_df.columns]],
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+            st.markdown("**与你的计划比较**")
+            st.write(latest_comparison.get("summary_cn") or "暂无可用对比。")
+            if latest_comparison.get("independence"):
+                st.caption(latest_comparison["independence"])
+            comparison_cols = st.columns(3)
+            comparison_cols[0].metric("方向关系", latest_comparison.get("direction_relation") or "—")
+            entry_delta = latest_comparison.get("entry_price_delta_pct")
+            comparison_cols[1].metric("入场价差", "—" if entry_delta is None else f"{entry_delta:+.2f}%")
+            user_rr = (latest_comparison.get("user_plan") or {}).get("risk_reward")
+            comparison_cols[2].metric("用户计划 R/R", "—" if user_rr is None else f"{user_rr:.2f}")
+            for title, key in (("主要差异", "differences"), ("共同风险/数据限制", "shared_risks")):
+                values = latest_comparison.get(key) or []
+                if values:
+                    st.markdown(f"**{title}**")
+                    _render_text_list(values)
+            for title, key in (("AI 使用的证据", "evidence"), ("AI 需要持续验证的条件", "conditions"), ("AI 数据缺口", "data_gaps")):
+                values = latest_decision.get(key) or []
+                if values:
+                    st.markdown(f"**{title}**")
+                    _render_text_list(values)
+
+    with st.expander(
+        f"🧭 计划环境反馈 · {feedback_summary} · {feedback_caption}",
+        expanded=expand_feedback_once,
+    ):
+        st.caption("反馈只指出支持、矛盾、风险和数据缺口，不构成下单批准、阻止或交易指令。")
+        refresh_plan_context = st.checkbox(
+            "按当前环境重新采集数据后再反馈（不会覆盖创建计划时的快照）",
+            key=f"refresh_plan_context_{selected_id}",
+        )
+        if st.button("🧭 生成计划环境反馈", type="primary", disabled=not admin_access, key=f"plan_feedback_{selected_id}"):
+            if require_admin("生成交易计划环境反馈"):
+                with st.spinner("正在对照计划、宏观、新闻、数据新鲜度和实时 K 线……"):
                     try:
-                        cancel_pending_paper_order(latest_paper["id"])
-                        st.success("已取消本地虚拟挂单；真实 OKX 订单没有被触碰。")
+                        generate_trade_plan_feedback(selected_id, refresh_context=refresh_plan_context)
+                        st.session_state[f"expand_plan_feedback_{selected_id}"] = True
+                        st.success("计划环境反馈已保存；它不构成下单批准或指令。")
                         st.rerun()
                     except Exception as exc:
-                        st.error(f"取消虚拟挂单失败：{exc}")
-            events = query_paper_order_events(latest_paper["id"], limit=20)
-            if events:
-                event_df = pd.DataFrame(_row_dicts(events))
-                with st.expander("查看 AI 虚拟订单事件", expanded=False):
-                    st.dataframe(
-                        event_df[[column for column in ("event_at", "event_type", "from_status", "to_status", "price", "reason") if column in event_df.columns]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
+                        st.error(f"计划环境反馈失败：{exc}")
 
-        st.markdown("**与你的计划比较**")
-        st.write(latest_comparison.get("summary_cn") or "暂无可用对比。")
-        if latest_comparison.get("independence"):
-            st.caption(latest_comparison["independence"])
-        comparison_cols = st.columns(3)
-        comparison_cols[0].metric("方向关系", latest_comparison.get("direction_relation") or "—")
-        entry_delta = latest_comparison.get("entry_price_delta_pct")
-        comparison_cols[1].metric("入场价差", "—" if entry_delta is None else f"{entry_delta:+.2f}%")
-        user_rr = (latest_comparison.get("user_plan") or {}).get("risk_reward")
-        comparison_cols[2].metric("用户计划 R/R", "—" if user_rr is None else f"{user_rr:.2f}")
-        for title, key, expanded in (("主要差异", "differences", True), ("共同风险/数据限制", "shared_risks", False)):
-            values = latest_comparison.get(key) or []
-            if values:
-                with st.expander(title, expanded=expanded):
+        if not plan_feedback_history:
+            st.info("尚未生成计划环境反馈。")
+        else:
+            feedback_cols = st.columns(4)
+            feedback_cols[0].metric("计划类型识别", classification_map.get(latest_plan_feedback.get("plan_classification"), "类型不明确"))
+            feedback_cols[1].metric("宏观关系", alignment_map.get(latest_plan_feedback.get("macro_alignment"), "数据不足"))
+            feedback_cols[2].metric("实时市场", alignment_map.get(latest_plan_feedback.get("realtime_alignment"), "数据不足"))
+            feedback_cols[3].metric("技术条件", alignment_map.get(latest_plan_feedback.get("technical_alignment"), "数据不足"))
+            st.write(latest_plan_feedback.get("summary_cn") or "暂无总结")
+            if latest_plan_feedback.get("time_horizon_assessment"):
+                st.caption("周期判断：" + latest_plan_feedback["time_horizon_assessment"])
+            for title, key in (
+                ("支持证据", "supporting_evidence"),
+                ("相互矛盾的证据", "contradicting_evidence"),
+                ("执行前/持仓中需验证", "conditions_to_validate"),
+                ("失效与时间止损检查", "invalidation_checks"),
+                ("风险提示", "risk_flags"),
+                ("数据缺口", "data_gaps"),
+            ):
+                values = latest_plan_feedback.get(key) or []
+                if key == "invalidation_checks":
+                    values = values + (latest_plan_feedback.get("time_stop_checks") or [])
+                if values:
+                    st.markdown(f"**{title}**")
                     _render_text_list(values)
-        for title, key in (("AI 使用的证据", "evidence"), ("AI 需要持续验证的条件", "conditions"), ("AI 数据缺口", "data_gaps")):
-            values = latest_decision.get(key) or []
-            if values:
-                with st.expander(title, expanded=False):
+            st.caption(f"最近反馈：{plan_feedback_history[0]['created_at']} · 置信度 {latest_plan_feedback.get('confidence', 0.0):.0%}")
+
+    with st.expander(
+        f"🧠 AI 点评历史 · {review_summary} · {review_caption}",
+        expanded=expand_review_once,
+    ):
+        st.caption("点评会对照原计划、环境反馈、实际只读订单/成交和当前 K 线摘要；不会执行任何交易。")
+        if st.button("🧠 生成 AI 交易点评", type="primary", disabled=not admin_access, key=f"trade_ai_review_{selected_id}"):
+            if require_admin("生成 AI 交易点评"):
+                with st.spinner("AI 正在复盘这笔已记录交易……"):
+                    try:
+                        linked_context = execution_links or ([{
+                            "venue": selected["venue"],
+                            "account_label": account_label,
+                            "order_id": selected["order_id"],
+                        }] if selected["order_id"] else [])
+                        context_orders = []
+                        context_fills = []
+                        seen_order_ids = set()
+                        for linked in linked_context:
+                            order_id = str(linked.get("order_id") or "").strip()
+                            if not order_id or order_id in seen_order_ids:
+                                continue
+                            seen_order_ids.add(order_id)
+                            context_orders.extend(query_trade_orders(
+                                venue=linked.get("venue") or selected["venue"],
+                                account_label=linked.get("account_label") or account_label,
+                                order_id=order_id,
+                                limit=1,
+                            ))
+                            context_fills.extend(query_trade_fills(
+                                venue=linked.get("venue") or selected["venue"],
+                                account_label=linked.get("account_label") or account_label,
+                                order_id=order_id,
+                                limit=200,
+                            ))
+                        order_context = {
+                            "orders": _row_dicts(context_orders),
+                            "fills": _row_dicts(context_fills),
+                            "execution_summary": {
+                                key: execution[key]
+                                for key in (
+                                    "state", "state_label", "entry_order_count", "exit_order_count",
+                                    "entry_filled_quantity", "exit_filled_quantity", "attributed_open_quantity",
+                                )
+                            },
+                        }
+                        review_trade_note(
+                            selected_id,
+                            order_context=order_context,
+                            market_context=st.session_state.get("okx_market_context", {}),
+                        )
+                        st.session_state[f"expand_ai_review_{selected_id}"] = True
+                        st.success("点评已保存。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"AI 点评失败：{exc}")
+
+        if not latest_review:
+            st.info("尚未生成 AI 交易点评。")
+        else:
+            st.metric(
+                "点评结论",
+                verdict_map.get(latest_review_payload.get("verdict"), "数据不足"),
+                f"置信度 {latest_review_payload.get('confidence', 0.0):.0%}",
+            )
+            st.write(latest_review_payload.get("summary_cn") or "暂无总结")
+            for title, key in (("做得好的地方", "strengths"), ("需要改进", "weaknesses"), ("风险提示", "risk_flags"), ("下一次复盘问题", "post_trade_questions")):
+                values = latest_review_payload.get(key) or []
+                if values:
+                    st.markdown(f"**{title}**")
                     _render_text_list(values)
-
-    st.markdown("### 计划环境反馈")
-    refresh_plan_context = st.checkbox(
-        "按当前环境重新采集数据后再反馈（不会覆盖创建计划时的快照）",
-        key=f"refresh_plan_context_{selected_id}",
-    )
-    if st.button("🧭 生成计划环境反馈", type="primary", disabled=not admin_access, key=f"plan_feedback_{selected_id}"):
-        if require_admin("生成交易计划环境反馈"):
-            with st.spinner("正在对照计划、宏观、新闻、数据新鲜度和实时 K 线……"):
-                try:
-                    generate_trade_plan_feedback(selected_id, refresh_context=refresh_plan_context)
-                    st.success("计划环境反馈已保存；它不构成下单批准或指令。")
-                except Exception as exc:
-                    st.error(f"计划环境反馈失败：{exc}")
-
-    plan_feedback_history = query_trade_plan_feedback(note_id=selected_id, limit=10)
-    if plan_feedback_history:
-        latest_plan_feedback = _json_object(plan_feedback_history[0]["feedback_json"])
-        alignment_map = {
-            "supportive": "支持", "neutral": "中性", "headwind": "存在逆风",
-            "mixed": "多空交织", "insufficient_data": "数据不足",
-        }
-        classification_map = {
-            "trend_following": "顺势交易", "countertrend_tactical": "逆趋势战术交易",
-            "event_driven": "事件驱动", "range": "区间/均值回归", "unclear": "类型不明确",
-        }
-        feedback_cols = st.columns(4)
-        feedback_cols[0].metric("计划类型识别", classification_map.get(latest_plan_feedback.get("plan_classification"), "类型不明确"))
-        feedback_cols[1].metric("宏观关系", alignment_map.get(latest_plan_feedback.get("macro_alignment"), "数据不足"))
-        feedback_cols[2].metric("实时市场", alignment_map.get(latest_plan_feedback.get("realtime_alignment"), "数据不足"))
-        feedback_cols[3].metric("技术条件", alignment_map.get(latest_plan_feedback.get("technical_alignment"), "数据不足"))
-        st.write(latest_plan_feedback.get("summary_cn") or "暂无总结")
-        if latest_plan_feedback.get("time_horizon_assessment"):
-            st.caption("周期判断：" + latest_plan_feedback["time_horizon_assessment"])
-        for title, key, expanded in (
-            ("支持证据", "supporting_evidence", False),
-            ("相互矛盾的证据", "contradicting_evidence", True),
-            ("执行前/持仓中需验证", "conditions_to_validate", True),
-            ("失效与时间止损检查", "invalidation_checks", True),
-            ("风险提示", "risk_flags", True),
-            ("数据缺口", "data_gaps", False),
-        ):
-            values = latest_plan_feedback.get(key) or []
-            if key == "invalidation_checks":
-                values = values + (latest_plan_feedback.get("time_stop_checks") or [])
-            if values:
-                with st.expander(title, expanded=expanded):
-                    _render_text_list(values)
-        st.caption(f"最近反馈：{plan_feedback_history[0]['created_at']} · 置信度 {latest_plan_feedback.get('confidence', 0.0):.0%}")
-
-    if st.button("🧠 生成 AI 交易点评", type="primary", disabled=not admin_access):
-        if require_admin("生成 AI 交易点评"):
-            with st.spinner("AI 正在复盘这笔已记录交易……"):
-                try:
-                    selected_order_id = (selected["order_id"] or "").strip()
-                    context_orders = query_trade_orders(
-                        venue=selected["venue"],
-                        symbol=selected["symbol"],
-                        order_id=selected_order_id or None,
-                        limit=20,
-                    )
-                    context_fills = query_trade_fills(
-                        venue=selected["venue"],
-                        symbol=selected["symbol"],
-                        order_id=selected_order_id or None,
-                        limit=50,
-                    )
-                    order_context = {
-                        "orders": _row_dicts(context_orders),
-                        "fills": _row_dicts(context_fills),
-                    }
-                    review_trade_note(
-                        selected_id,
-                        order_context=order_context,
-                        market_context=st.session_state.get("okx_market_context", {}),
-                    )
-                    st.success("点评已保存。")
-                except Exception as exc:
-                    st.error(f"AI 点评失败：{exc}")
-
-    reviews = query_trade_ai_reviews(note_id=selected_id, limit=10)
-    if reviews:
-        st.markdown("### AI 点评历史")
-        latest = reviews[0]
-        try:
-            review = json.loads(latest["review_json"] or "{}")
-        except (TypeError, ValueError):
-            review = {}
-        verdict_map = {
-            "reasonable": "相对合理",
-            "mixed": "有得有失",
-            "unreasonable": "存在明显问题",
-            "insufficient_data": "数据不足",
-        }
-        st.metric("点评结论", verdict_map.get(review.get("verdict"), "数据不足"), f"置信度 {review.get('confidence', 0.0):.0%}")
-        st.write(review.get("summary_cn") or "暂无总结")
-        for title, key in (("做得好的地方", "strengths"), ("需要改进", "weaknesses"), ("风险提示", "risk_flags"), ("下一次复盘问题", "post_trade_questions")):
-            values = review.get(key) or []
-            if values:
-                with st.expander(title, expanded=key in {"risk_flags", "weaknesses"}):
-                    for item in values:
-                        st.markdown(f"- {item}")
-        if review.get("thesis_consistency"):
-            st.caption("理由一致性：" + review["thesis_consistency"])
-        if review.get("execution_review"):
-            st.caption("执行复盘：" + review["execution_review"])
+            if latest_review_payload.get("thesis_consistency"):
+                st.caption("理由一致性：" + latest_review_payload["thesis_consistency"])
+            if latest_review_payload.get("execution_review"):
+                st.caption("执行复盘：" + latest_review_payload["execution_review"])
 
     df = pd.DataFrame([dict(row) for row in notes])
+    if "plan_intent_status" in df.columns:
+        df["plan_intent_status"] = df["plan_intent_status"].map(
+            lambda value: PLAN_INTENT_STATUS_LABELS.get(str(value or "").lower(), "计划有效")
+        )
     st.dataframe(
         df[[
             "id", "created_at", "venue", "symbol", "side", "trade_type", "entry_order_type",
-            "entry_price", "trigger_price", "planned_quantity", "order_id", "expected_horizon", "plan_status",
+            "entry_price", "trigger_price", "planned_quantity", "expected_horizon", "plan_intent_status",
         ]].rename(columns={
             "id": "ID", "created_at": "记录时间", "venue": "交易所", "symbol": "交易对",
             "side": "方向", "trade_type": "交易类型", "entry_order_type": "入场方式",
             "entry_price": "计划入场价", "trigger_price": "触发价", "planned_quantity": "计划数量",
-            "order_id": "订单ID", "expected_horizon": "预期周期", "plan_status": "计划状态",
+            "expected_horizon": "预期周期", "plan_intent_status": "计划意图",
         }),
         use_container_width=True,
         hide_index=True,

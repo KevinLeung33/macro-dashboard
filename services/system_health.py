@@ -135,6 +135,20 @@ def _task_issues():
         ),
         ("news_refresh", "新闻完整分析", _env_float("HEALTH_NEWS_MAX_AGE_SECONDS", 10800)),
     ]
+    okx_sync_enabled = (
+        os.getenv("OKX_READONLY_SYNC_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        and all(os.getenv(name, "").strip() for name in (
+            "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE",
+        ))
+    )
+    if okx_sync_enabled:
+        definitions.append(
+            (
+                "okx_trade_sync",
+                "OKX 只读执行同步",
+                max(180, _env_int("OKX_READONLY_SYNC_INTERVAL_MINUTES", 1) * 60 * 3),
+            )
+        )
     for task_name, label, max_age in definitions:
         status = statuses.get(task_name) or {}
         last_success = _parse_timestamp(status.get("last_success_at"))

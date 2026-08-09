@@ -112,7 +112,7 @@ def _plan_payload(note):
         "id", "venue", "symbol", "side", "order_id", "thesis", "setup", "entry_order_type",
         "entry_price", "trigger_price", "planned_quantity", "entry_trigger", "stop_price",
         "target_price", "risk_note", "trade_type", "expected_horizon", "macro_horizon",
-        "analysis_timeframe", "time_stop", "plan_status", "plan_expires_at",
+        "analysis_timeframe", "time_stop", "plan_status", "plan_intent_status", "plan_expires_at",
         "created_at", "context_captured_at",
     )
     return {field: note[field] for field in fields if field in note.keys()}

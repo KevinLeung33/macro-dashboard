@@ -1673,20 +1673,23 @@ def insert_trade_note(venue, symbol, order_id="", side="", thesis="", setup="",
                       expected_horizon="", risk_note="",
                       market_snapshot=None, trade_type="swing", macro_horizon="",
                       analysis_timeframe="", entry_trigger="", time_stop="",
-                      plan_status="planned", plan_expires_at="", context_captured_at=""):
+                      plan_status="planned", plan_intent_status="active",
+                      plan_expires_at="", context_captured_at=""):
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO trade_notes
-               (venue, symbol, order_id, side, thesis, setup, entry_order_type, entry_price,
+                (venue, symbol, order_id, side, thesis, setup, entry_order_type, entry_price,
                 trigger_price, planned_quantity, stop_price, target_price, expected_horizon,
                 trade_type, macro_horizon, analysis_timeframe, entry_trigger, time_stop,
-                plan_status, plan_expires_at, context_captured_at, risk_note, market_snapshot_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                plan_status, plan_intent_status, plan_expires_at, context_captured_at, risk_note,
+                market_snapshot_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (venue, symbol, order_id, side, thesis, setup, entry_order_type or "manual", entry_price,
              trigger_price, planned_quantity, stop_price, target_price, expected_horizon,
              trade_type or "swing", macro_horizon or "", analysis_timeframe or "",
-             entry_trigger or "", time_stop or "", plan_status or "planned", plan_expires_at or "",
-             context_captured_at or "", risk_note, _json_text(market_snapshot or {})),
+             entry_trigger or "", time_stop or "", plan_status or "planned",
+             plan_intent_status or "active", plan_expires_at or "", context_captured_at or "",
+             risk_note, _json_text(market_snapshot or {})),
         )
         return cur.lastrowid
 
@@ -1748,6 +1751,360 @@ def update_trade_note_order_plan(note_id, *, order_id="", entry_order_type="manu
             ),
         )
         return bool(cur.rowcount)
+
+
+PLAN_ORDER_ROLES = {"entry", "take_profit", "stop_loss", "manual_exit", "other_exit"}
+PLAN_INTENT_STATUSES = {"active", "paused", "abandoned", "archived"}
+
+
+def _float_or_zero(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _same_number(left, right):
+    return math.isclose(_float_or_zero(left), _float_or_zero(right), rel_tol=1e-12, abs_tol=1e-12)
+
+
+def _insert_trade_plan_order_event(conn, *, note_id, link_id, venue, account_label,
+                                    order_id, role, event_type, from_status="", to_status="",
+                                    previous_filled_quantity=None, filled_quantity=None,
+                                    avg_price=None, exchange_updated_at=""):
+    conn.execute(
+        """INSERT INTO trade_plan_order_events
+           (note_id, plan_order_link_id, venue, account_label, order_id, role, event_type,
+            from_status, to_status, previous_filled_quantity, filled_quantity, avg_price,
+            exchange_updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            note_id, link_id, venue or "", account_label or "", str(order_id or ""), role or "",
+            event_type or "", from_status or "", to_status or "", previous_filled_quantity,
+            filled_quantity, avg_price, exchange_updated_at or "",
+        ),
+    )
+
+
+def update_trade_note_intent_status(note_id, intent_status):
+    """Update only the user's research intent, never the exchange execution state."""
+    status = str(intent_status or "active").strip().lower()
+    if status not in PLAN_INTENT_STATUSES:
+        raise ValueError(f"unsupported plan intent status: {intent_status}")
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE trade_notes
+               SET plan_intent_status = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (status, note_id),
+        )
+        return bool(cur.rowcount)
+
+
+def link_trade_plan_order(note_id, *, venue, account_label="", order_id, role="entry", link_note=""):
+    """Link one already-synchronised exchange order to a local research plan.
+
+    The relationship is local metadata only.  It is deliberately not an order-routing
+    operation and therefore cannot amend, cancel, or create anything at an exchange.
+    """
+    role = str(role or "entry").strip().lower()
+    if role not in PLAN_ORDER_ROLES:
+        raise ValueError(f"unsupported plan-order role: {role}")
+    venue = str(venue or "").strip()
+    account_label = str(account_label or "").strip()
+    order_id = str(order_id or "").strip()
+    if not venue or not order_id:
+        raise ValueError("venue and order_id are required")
+
+    with get_db() as conn:
+        note = conn.execute("SELECT id FROM trade_notes WHERE id = ?", (note_id,)).fetchone()
+        if not note:
+            raise ValueError(f"trade plan not found: {note_id}")
+        order = conn.execute(
+            """SELECT * FROM trade_orders
+               WHERE venue = ? AND account_label = ? AND order_id = ?""",
+            (venue, account_label, order_id),
+        ).fetchone()
+        if not order:
+            raise ValueError("该订单尚未同步到本地；请先同步 OKX 后再关联。")
+        other_plan = conn.execute(
+            """SELECT note_id FROM trade_plan_order_links
+               WHERE venue = ? AND account_label = ? AND order_id = ? AND note_id <> ?
+               LIMIT 1""",
+            (venue, account_label, order_id, note_id),
+        ).fetchone()
+        if other_plan:
+            raise ValueError(f"该订单已关联到计划 #{other_plan['note_id']}；请先解除原关联。")
+
+        existing = conn.execute(
+            """SELECT * FROM trade_plan_order_links
+               WHERE note_id = ? AND venue = ? AND account_label = ? AND order_id = ?""",
+            (note_id, venue, account_label, order_id),
+        ).fetchone()
+        data = dict(order)
+        conn.execute(
+            """INSERT INTO trade_plan_order_links
+               (note_id, venue, account_label, order_id, role, link_note,
+                last_exchange_status, last_filled_quantity, last_avg_price,
+                last_exchange_updated_at, linked_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(note_id, venue, account_label, order_id) DO UPDATE SET
+                 role=excluded.role, link_note=excluded.link_note,
+                 last_exchange_status=excluded.last_exchange_status,
+                 last_filled_quantity=excluded.last_filled_quantity,
+                 last_avg_price=excluded.last_avg_price,
+                 last_exchange_updated_at=excluded.last_exchange_updated_at,
+                 updated_at=CURRENT_TIMESTAMP""",
+            (
+                note_id, venue, account_label, order_id, role, link_note or "",
+                data.get("status") or "", _float_or_zero(data.get("filled_quantity")),
+                data.get("avg_price"), data.get("updated_at") or "",
+            ),
+        )
+        link = conn.execute(
+            """SELECT * FROM trade_plan_order_links
+               WHERE note_id = ? AND venue = ? AND account_label = ? AND order_id = ?""",
+            (note_id, venue, account_label, order_id),
+        ).fetchone()
+        if role == "entry":
+            # Keep the legacy field populated for existing reports, while the link
+            # table becomes the source of truth for the complete execution chain.
+            conn.execute(
+                """UPDATE trade_notes
+                   SET order_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                (order_id, note_id),
+            )
+        elif existing and str(existing["role"] or "") == "entry":
+            replacement = conn.execute(
+                """SELECT order_id FROM trade_plan_order_links
+                   WHERE note_id = ? AND role = 'entry'
+                   ORDER BY linked_at DESC, id DESC LIMIT 1""",
+                (note_id,),
+            ).fetchone()
+            conn.execute(
+                """UPDATE trade_notes
+                   SET order_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                ((replacement["order_id"] if replacement else ""), note_id),
+            )
+        _insert_trade_plan_order_event(
+            conn,
+            note_id=note_id,
+            link_id=link["id"],
+            venue=venue,
+            account_label=account_label,
+            order_id=order_id,
+            role=role,
+            event_type="linked" if not existing else "relinked",
+            from_status=(existing["last_exchange_status"] if existing else ""),
+            to_status=data.get("status") or "",
+            previous_filled_quantity=(existing["last_filled_quantity"] if existing else None),
+            filled_quantity=_float_or_zero(data.get("filled_quantity")),
+            avg_price=data.get("avg_price"),
+            exchange_updated_at=data.get("updated_at") or "",
+        )
+        return dict(link)
+
+
+def unlink_trade_plan_order(note_id, link_id):
+    """Remove a mistaken local plan-order link without touching the exchange order."""
+    with get_db() as conn:
+        link = conn.execute(
+            "SELECT * FROM trade_plan_order_links WHERE id = ? AND note_id = ?",
+            (link_id, note_id),
+        ).fetchone()
+        if not link:
+            return False
+        conn.execute("DELETE FROM trade_plan_order_events WHERE plan_order_link_id = ?", (link_id,))
+        conn.execute("DELETE FROM trade_plan_order_links WHERE id = ?", (link_id,))
+        if str(link["role"] or "") == "entry":
+            replacement = conn.execute(
+                """SELECT order_id FROM trade_plan_order_links
+                   WHERE note_id = ? AND role = 'entry'
+                   ORDER BY linked_at DESC, id DESC LIMIT 1""",
+                (note_id,),
+            ).fetchone()
+            conn.execute(
+                """UPDATE trade_notes SET order_id = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                ((replacement["order_id"] if replacement else ""), note_id),
+            )
+        return True
+
+
+def query_trade_plan_order_links(note_id=None, venue=None, account_label=None, limit=200):
+    with get_db() as conn:
+        clauses = []
+        values = []
+        for column, value in (("l.note_id", note_id), ("l.venue", venue), ("l.account_label", account_label)):
+            if value not in (None, ""):
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.append(limit)
+        return conn.execute(
+            f"""SELECT l.*,
+                       o.symbol AS order_symbol, o.instrument_type AS order_instrument_type,
+                       o.side AS order_side, o.position_side AS order_position_side,
+                       o.order_type AS order_type, o.status AS order_status,
+                       o.price AS order_price, o.avg_price AS order_avg_price,
+                       o.quantity AS order_quantity, o.filled_quantity AS order_filled_quantity,
+                       o.reduce_only AS order_reduce_only, o.placed_at AS order_placed_at,
+                       o.updated_at AS order_updated_at, o.synced_at AS order_synced_at
+                FROM trade_plan_order_links l
+                LEFT JOIN trade_orders o
+                  ON o.venue = l.venue AND o.account_label = l.account_label
+                 AND o.order_id = l.order_id
+                {where}
+                ORDER BY CASE l.role WHEN 'entry' THEN 0 ELSE 1 END,
+                         l.linked_at ASC, l.id ASC
+                LIMIT ?""",
+            values,
+        ).fetchall()
+
+
+def query_trade_plan_order_events(note_id, limit=200):
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT * FROM trade_plan_order_events WHERE note_id = ?
+               ORDER BY created_at DESC, id DESC LIMIT ?""",
+            (note_id, limit),
+        ).fetchall()
+
+
+def refresh_trade_plan_order_links(venue=None, account_label=None):
+    """Capture synced order state/fill changes for linked plans.
+
+    This function reads only the local trade-order cache after the read-only OKX
+    synchroniser has updated it.  It never calls an exchange API itself.
+    """
+    with get_db() as conn:
+        clauses = []
+        values = []
+        for column, value in (("l.venue", venue), ("l.account_label", account_label)):
+            if value not in (None, ""):
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            f"""SELECT l.*, o.status AS order_status, o.filled_quantity AS order_filled_quantity,
+                       o.avg_price AS order_avg_price, o.updated_at AS order_updated_at
+                FROM trade_plan_order_links l
+                JOIN trade_orders o
+                  ON o.venue = l.venue AND o.account_label = l.account_label
+                 AND o.order_id = l.order_id
+                {where}""",
+            values,
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            data = dict(row)
+            previous_status = str(data.get("last_exchange_status") or "")
+            next_status = str(data.get("order_status") or "")
+            previous_filled = _float_or_zero(data.get("last_filled_quantity"))
+            next_filled = _float_or_zero(data.get("order_filled_quantity"))
+            status_changed = previous_status != next_status
+            fill_changed = not _same_number(previous_filled, next_filled)
+            if status_changed or fill_changed:
+                event_type = "status_and_fill" if status_changed and fill_changed else (
+                    "status_changed" if status_changed else "fill_progress"
+                )
+                _insert_trade_plan_order_event(
+                    conn,
+                    note_id=data["note_id"],
+                    link_id=data["id"],
+                    venue=data["venue"],
+                    account_label=data["account_label"],
+                    order_id=data["order_id"],
+                    role=data["role"],
+                    event_type=event_type,
+                    from_status=previous_status,
+                    to_status=next_status,
+                    previous_filled_quantity=previous_filled,
+                    filled_quantity=next_filled,
+                    avg_price=data.get("order_avg_price"),
+                    exchange_updated_at=data.get("order_updated_at") or "",
+                )
+                changed += 1
+            conn.execute(
+                """UPDATE trade_plan_order_links
+                   SET last_exchange_status = ?, last_filled_quantity = ?, last_avg_price = ?,
+                       last_exchange_updated_at = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (
+                    next_status, next_filled, data.get("order_avg_price"),
+                    data.get("order_updated_at") or "", data["id"],
+                ),
+            )
+        return {"checked": len(rows), "changed": changed}
+
+
+def _delete_trade_plan_research_records(conn, note_ids):
+    """Delete only locally authored plan/AI research records, never exchange caches."""
+    note_ids = [int(value) for value in note_ids if value is not None]
+    if not note_ids:
+        return {
+            "plans": 0, "links": 0, "execution_events": 0, "feedback": 0,
+            "reviews": 0, "shadow_plans": 0, "paper_orders": 0, "paper_events": 0,
+        }
+    placeholders = ",".join("?" for _ in note_ids)
+
+    def count(table, where, params):
+        return conn.execute(f"SELECT COUNT(*) AS count FROM {table} WHERE {where}", params).fetchone()["count"]
+
+    shadow_ids = [
+        row["id"] for row in conn.execute(
+            f"SELECT id FROM ai_shadow_plans WHERE note_id IN ({placeholders})", note_ids
+        ).fetchall()
+    ]
+    paper_ids = []
+    if shadow_ids:
+        shadow_placeholders = ",".join("?" for _ in shadow_ids)
+        paper_ids = [
+            row["id"] for row in conn.execute(
+                f"SELECT id FROM paper_orders WHERE shadow_plan_id IN ({shadow_placeholders})", shadow_ids
+            ).fetchall()
+        ]
+
+    counts = {
+        "plans": count("trade_notes", f"id IN ({placeholders})", note_ids),
+        "links": count("trade_plan_order_links", f"note_id IN ({placeholders})", note_ids),
+        "execution_events": count("trade_plan_order_events", f"note_id IN ({placeholders})", note_ids),
+        "feedback": count("trade_plan_feedback", f"note_id IN ({placeholders})", note_ids),
+        "reviews": count("trade_ai_reviews", f"note_id IN ({placeholders})", note_ids),
+        "shadow_plans": len(shadow_ids),
+        "paper_orders": len(paper_ids),
+        "paper_events": 0,
+    }
+    if paper_ids:
+        paper_placeholders = ",".join("?" for _ in paper_ids)
+        counts["paper_events"] = count(
+            "paper_order_events", f"paper_order_id IN ({paper_placeholders})", paper_ids
+        )
+        conn.execute(f"DELETE FROM paper_order_events WHERE paper_order_id IN ({paper_placeholders})", paper_ids)
+        conn.execute(f"DELETE FROM paper_orders WHERE id IN ({paper_placeholders})", paper_ids)
+    if shadow_ids:
+        shadow_placeholders = ",".join("?" for _ in shadow_ids)
+        conn.execute(f"DELETE FROM ai_shadow_plans WHERE id IN ({shadow_placeholders})", shadow_ids)
+    conn.execute(f"DELETE FROM trade_plan_order_events WHERE note_id IN ({placeholders})", note_ids)
+    conn.execute(f"DELETE FROM trade_plan_order_links WHERE note_id IN ({placeholders})", note_ids)
+    conn.execute(f"DELETE FROM trade_plan_feedback WHERE note_id IN ({placeholders})", note_ids)
+    conn.execute(f"DELETE FROM trade_ai_reviews WHERE note_id IN ({placeholders})", note_ids)
+    conn.execute(f"DELETE FROM trade_notes WHERE id IN ({placeholders})", note_ids)
+    return counts
+
+
+def delete_trade_plan_research_data(note_id):
+    """Hard-delete one local plan and its dependent local AI/paper records only."""
+    with get_db() as conn:
+        return _delete_trade_plan_research_records(conn, [note_id])
+
+
+def clear_all_trade_plan_research_data():
+    """Hard-delete all local plan/AI research records; exchange caches are retained."""
+    with get_db() as conn:
+        note_ids = [row["id"] for row in conn.execute("SELECT id FROM trade_notes").fetchall()]
+        return _delete_trade_plan_research_records(conn, note_ids)
 
 
 def insert_trade_plan_feedback(note_id, model, prompt_version, status, context, feedback,
@@ -1875,7 +2232,8 @@ def query_trade_positions(venue=None, account_label="", symbol=None, limit=100):
         ).fetchall()
 
 
-def query_trade_orders(venue=None, account_label="", symbol=None, order_id=None, limit=100):
+def query_trade_orders(venue=None, account_label="", symbol=None, order_id=None, limit=100,
+                       statuses=None, reduce_only=None):
     with get_db() as conn:
         clauses = []
         values = []
@@ -1884,6 +2242,15 @@ def query_trade_orders(venue=None, account_label="", symbol=None, order_id=None,
             if value:
                 clauses.append(f"{column} = ?")
                 values.append(value)
+        if statuses:
+            normalized = [str(status).strip().lower() for status in statuses if str(status).strip()]
+            if normalized:
+                placeholders = ",".join("?" for _ in normalized)
+                clauses.append(f"LOWER(COALESCE(status, '')) IN ({placeholders})")
+                values.extend(normalized)
+        if reduce_only is not None:
+            clauses.append("reduce_only = ?")
+            values.append(int(bool(reduce_only)))
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         values.append(limit)
         return conn.execute(

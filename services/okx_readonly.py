@@ -22,6 +22,7 @@ from db.repository import (
     upsert_trade_fill,
     upsert_trade_order,
     upsert_trade_position,
+    refresh_trade_plan_order_links,
 )
 
 logger = logging.getLogger("okx_readonly")
@@ -163,7 +164,16 @@ class OKXReadOnlyClient:
             },
         )
 
-    def fetch_order_history(self, inst_type=None, limit=None):
+    def fetch_recent_order_history(self, inst_type=None, limit=None):
+        return self._private_get(
+            "/api/v5/trade/orders-history",
+            {
+                "instType": inst_type or os.getenv("OKX_INST_TYPE", "SWAP"),
+                "limit": limit or _int(os.getenv("OKX_SYNC_LIMIT", "100")),
+            },
+        )
+
+    def fetch_order_history_archive(self, inst_type=None, limit=None):
         return self._private_get(
             "/api/v5/trade/orders-history-archive",
             {
@@ -171,6 +181,10 @@ class OKXReadOnlyClient:
                 "limit": limit or _int(os.getenv("OKX_SYNC_LIMIT", "100")),
             },
         )
+
+    def fetch_order_history(self, inst_type=None, limit=None):
+        """Backward-compatible alias for the three-month archive endpoint."""
+        return self.fetch_order_history_archive(inst_type=inst_type, limit=limit)
 
     def fetch_fills(self, inst_type=None, limit=None):
         return self._private_get(
@@ -283,6 +297,80 @@ def _normalise_position(row, account_label):
     }
 
 
+def _sync_positions(client, account_label):
+    position_rows = client.fetch_positions()
+    positions = [
+        _normalise_position(row, account_label)
+        for row in position_rows
+        if row.get("instId") and abs(_float(row.get("pos"), 0) or 0) > 0
+    ]
+    clear_trade_positions("OKX", account_label)
+    for position in positions:
+        upsert_trade_position(position)
+    return positions
+
+
+def _sync_orders_and_fills(client, account_label, include_archive=True):
+    """Synchronise pending plus recent terminal orders before optional archive data.
+
+    OKX keeps ordinary cancelled orders in the recent-history endpoint for a
+    short window.  Reading it on every execution sync is what allows a cached
+    ``live`` order to turn into ``canceled`` promptly instead of remaining in
+    the dashboard's current-order view.
+    """
+    pending = client.fetch_pending_orders()
+    recent_history = client.fetch_recent_order_history()
+    archive_history = client.fetch_order_history_archive() if include_archive else []
+    rows = pending + recent_history + archive_history
+    orders = [_normalise_order(row, account_label) for row in rows if row.get("ordId")]
+    unique_orders = {}
+    for order in orders:
+        unique_orders[(order["venue"], order["account_label"], order["order_id"])] = order
+    orders = list(unique_orders.values())
+    for order in orders:
+        upsert_trade_order(order)
+
+    fill_rows = client.fetch_fills()
+    fills = [_normalise_fill(row, account_label) for row in fill_rows if row.get("tradeId")]
+    for fill in fills:
+        upsert_trade_fill(fill)
+    plan_link_updates = refresh_trade_plan_order_links("OKX", account_label)
+    return orders, fills, plan_link_updates
+
+
+def sync_okx_trade_execution(client=None, include_archive=False):
+    """Lightweight read-only execution sync used by the scheduler.
+
+    It intentionally does not insert a new account-equity snapshot every
+    minute.  It refreshes positions, pending/recent orders and fills so linked
+    trade plans can capture order transitions and fill progress.
+    """
+    client = client or OKXReadOnlyClient()
+    if not client.configured:
+        raise OKXReadOnlyError("OKX_API_KEY/OKX_API_SECRET/OKX_API_PASSPHRASE 未完整配置")
+    account_label = os.getenv("OKX_ACCOUNT_LABEL", "main").strip() or "main"
+    positions = _sync_positions(client, account_label)
+    orders, fills, plan_link_updates = _sync_orders_and_fills(
+        client,
+        account_label,
+        include_archive=include_archive,
+    )
+    return {
+        "venue": "OKX",
+        "account_label": account_label,
+        "positions": positions,
+        "orders": orders,
+        "fills": fills,
+        "plan_link_updates": plan_link_updates,
+        "counts": {
+            "positions": len(positions),
+            "orders": len(orders),
+            "fills": len(fills),
+            "plan_link_updates": plan_link_updates.get("changed", 0),
+        },
+    }
+
+
 def sync_okx_readonly_account(client=None):
     """Synchronise one OKX read-only account snapshot and return a safe summary."""
     client = client or OKXReadOnlyClient()
@@ -316,33 +404,16 @@ def sync_okx_readonly_account(client=None):
     }
     upsert_trade_account_snapshot(**snapshot)
 
-    position_rows = client.fetch_positions()
-    positions = [
-        _normalise_position(row, account_label)
-        for row in position_rows
-        if row.get("instId") and abs(_float(row.get("pos"), 0) or 0) > 0
-    ]
-    clear_trade_positions("OKX", account_label)
-    for position in positions:
-        upsert_trade_position(position)
+    positions = _sync_positions(client, account_label)
     position_modes = {str(item.get("margin_mode") or "cross") for item in positions}
     if position_modes and position_modes != {"cross"}:
         warnings.append("检测到非全 cross 持仓，请逐笔检查 margin_mode")
 
-    pending = client.fetch_pending_orders()
-    history = client.fetch_order_history()
-    orders = [_normalise_order(row, account_label) for row in pending + history if row.get("ordId")]
-    unique_orders = {}
-    for order in orders:
-        unique_orders[(order["venue"], order["account_label"], order["order_id"])] = order
-    orders = list(unique_orders.values())
-    for order in orders:
-        upsert_trade_order(order)
-
-    fill_rows = client.fetch_fills()
-    fills = [_normalise_fill(row, account_label) for row in fill_rows if row.get("tradeId")]
-    for fill in fills:
-        upsert_trade_fill(fill)
+    orders, fills, plan_link_updates = _sync_orders_and_fills(
+        client,
+        account_label,
+        include_archive=True,
+    )
 
     return {
         "venue": "OKX",
@@ -357,6 +428,9 @@ def sync_okx_readonly_account(client=None):
         "orders": orders,
         "fills": fills,
         "warnings": warnings,
-        "counts": {"positions": len(positions), "orders": len(orders), "fills": len(fills)},
+        "plan_link_updates": plan_link_updates,
+        "counts": {
+            "positions": len(positions), "orders": len(orders), "fills": len(fills),
+            "plan_link_updates": plan_link_updates.get("changed", 0),
+        },
     }
-

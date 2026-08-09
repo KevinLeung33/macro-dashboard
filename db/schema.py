@@ -63,6 +63,7 @@ _COMPATIBLE_COLUMNS = {
         "entry_trigger": "TEXT DEFAULT ''",
         "time_stop": "TEXT DEFAULT ''",
         "plan_status": "TEXT DEFAULT 'planned'",
+        "plan_intent_status": "TEXT DEFAULT 'active'",
         "plan_expires_at": "TEXT DEFAULT ''",
         "context_captured_at": "TEXT DEFAULT ''",
     },
@@ -545,6 +546,7 @@ def init_db():
                 entry_trigger TEXT DEFAULT '',
                 time_stop TEXT DEFAULT '',
                 plan_status TEXT DEFAULT 'planned',
+                plan_intent_status TEXT DEFAULT 'active',
                 plan_expires_at TEXT DEFAULT '',
                 context_captured_at TEXT DEFAULT '',
                 risk_note TEXT DEFAULT '',
@@ -555,6 +557,56 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_trade_notes_recent
                 ON trade_notes(symbol, created_at DESC);
+
+            -- 一条研究计划可以没有真实订单，也可以关联多笔入场/退出订单。
+            -- 此表仅保存本地归属关系，不会向交易所发送下单、撤单或改单请求。
+            CREATE TABLE IF NOT EXISTS trade_plan_order_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL,
+                venue TEXT NOT NULL,
+                account_label TEXT DEFAULT '',
+                order_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'entry',
+                link_note TEXT DEFAULT '',
+                last_exchange_status TEXT DEFAULT '',
+                last_filled_quantity REAL DEFAULT 0,
+                last_avg_price REAL,
+                last_exchange_updated_at TEXT DEFAULT '',
+                linked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (note_id) REFERENCES trade_notes(id),
+                UNIQUE(note_id, venue, account_label, order_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_plan_order_links_note
+                ON trade_plan_order_links(note_id, role, linked_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_trade_plan_order_links_order
+                ON trade_plan_order_links(venue, account_label, order_id);
+
+            -- 将交易所订单状态、累计成交量的变化记录到计划时间线。
+            CREATE TABLE IF NOT EXISTS trade_plan_order_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL,
+                plan_order_link_id INTEGER NOT NULL,
+                venue TEXT NOT NULL,
+                account_label TEXT DEFAULT '',
+                order_id TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT '',
+                event_type TEXT NOT NULL,
+                from_status TEXT DEFAULT '',
+                to_status TEXT DEFAULT '',
+                previous_filled_quantity REAL,
+                filled_quantity REAL,
+                avg_price REAL,
+                exchange_updated_at TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (note_id) REFERENCES trade_notes(id),
+                FOREIGN KEY (plan_order_link_id) REFERENCES trade_plan_order_links(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trade_plan_order_events_note
+                ON trade_plan_order_events(note_id, created_at DESC);
 
             -- 下单前可选的环境反馈；它只保存分析和快照，不提供批准、下单或撤单能力。
             CREATE TABLE IF NOT EXISTS trade_plan_feedback (
@@ -865,11 +917,20 @@ def init_db():
         _ensure_column(conn, "trade_notes", "entry_trigger")
         _ensure_column(conn, "trade_notes", "time_stop")
         _ensure_column(conn, "trade_notes", "plan_status")
+        _ensure_column(conn, "trade_notes", "plan_intent_status")
         _ensure_column(conn, "trade_notes", "plan_expires_at")
         _ensure_column(conn, "trade_notes", "context_captured_at")
         conn.execute(
+            "UPDATE trade_notes SET plan_intent_status = 'active' "
+            "WHERE plan_intent_status IS NULL OR plan_intent_status = ''"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_trade_notes_plan_status "
             "ON trade_notes(plan_status, created_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_notes_intent_status "
+            "ON trade_notes(plan_intent_status, created_at DESC)"
         )
         # This index must be created after the compatibility migration above.
         # Older databases do not yet have processing_status when executescript runs.

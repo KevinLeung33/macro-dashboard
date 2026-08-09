@@ -19,8 +19,8 @@ logger = logging.getLogger("scheduler")
 
 class MacroScheduler:
     def __init__(self, data_pipeline, news_fetcher, report_builder, notifier,
-                 fast_news_fetcher=None, cpolar_checker=None, health_checker=None,
-                 paper_trading_runner=None):
+                  fast_news_fetcher=None, cpolar_checker=None, health_checker=None,
+                  paper_trading_runner=None, trade_execution_sync_runner=None):
         self.timezone = app_timezone()
         self.scheduler = BackgroundScheduler(timezone=self.timezone)
         self.data_pipeline = data_pipeline
@@ -29,6 +29,7 @@ class MacroScheduler:
         # cpolar_checker 保留为兼容旧调用；新版本统一使用 health_checker。
         self.health_checker = health_checker or cpolar_checker
         self.paper_trading_runner = paper_trading_runner
+        self.trade_execution_sync_runner = trade_execution_sync_runner
         self.report_builder = report_builder
         self.notifier = notifier
 
@@ -94,6 +95,25 @@ class MacroScheduler:
         except Exception as e:
             logger.error("AI paper trading check failed: %s", e)
 
+    def _sync_trade_execution(self):
+        """Refresh read-only OKX order/fill state for linked trade plans."""
+        if not self.trade_execution_sync_runner:
+            return
+        try:
+            with hold_task("okx_trade_sync"):
+                result = run_with_retry("okx_trade_sync", self.trade_execution_sync_runner)
+            counts = result.get("counts") if isinstance(result, dict) else {}
+            logger.info(
+                "OKX read-only execution sync: orders=%s fills=%s plan_link_updates=%s",
+                counts.get("orders", "?"),
+                counts.get("fills", "?"),
+                counts.get("plan_link_updates", "?"),
+            )
+        except TaskBusyError:
+            logger.warning("OKX execution sync skipped: another execution sync is running")
+        except Exception as e:
+            logger.error("OKX read-only execution sync failed: %s", e)
+
     def _daily_report(self):
         logger.info("Scheduled: generating daily report at %s...", self._now())
         try:
@@ -125,6 +145,15 @@ class MacroScheduler:
         paper_enabled = (
             self.paper_trading_runner
             and os.getenv("AI_SHADOW_PAPER_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        okx_credentials_configured = all(
+            os.getenv(name, "").strip()
+            for name in ("OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE")
+        )
+        execution_sync_enabled = (
+            self.trade_execution_sync_runner
+            and okx_credentials_configured
+            and os.getenv("OKX_READONLY_SYNC_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         # Data: every 6 hours
         self.scheduler.add_job(self._fetch_data, CronTrigger(hour="*/6"))
@@ -176,6 +205,17 @@ class MacroScheduler:
                 id="ai_shadow_paper_trading",
                 replace_existing=True,
             )
+        if execution_sync_enabled:
+            try:
+                execution_minutes = max(1, int(os.getenv("OKX_READONLY_SYNC_INTERVAL_MINUTES", "1")))
+            except ValueError:
+                execution_minutes = 1
+            self.scheduler.add_job(
+                self._sync_trade_execution,
+                IntervalTrigger(minutes=execution_minutes),
+                id="okx_readonly_trade_execution_sync",
+                replace_existing=True,
+            )
         # Daily report: 8:00 AM
         self.scheduler.add_job(self._daily_report, CronTrigger(hour=8, minute=0))
         # Weekly report: Monday 9:00 AM
@@ -183,12 +223,13 @@ class MacroScheduler:
         self.scheduler.start()
         logger.info(
             "Scheduler started with timezone=%s current_time=%s; jobs: "
-            "data/6h, RSS/%sm, news/1h, system-health/%sm, AI-paper/%sm, daily/8am, weekly/Mon9am",
+            "data/6h, RSS/%sm, news/1h, system-health/%sm, AI-paper/%sm, OKX-execution/%sm, daily/8am, weekly/Mon9am",
             timezone_name(),
             self._now(),
             os.getenv("NEWS_FAST_REFRESH_MINUTES", "15") if self.fast_news_fetcher else "off",
             os.getenv("CPOLAR_HEALTH_CHECK_MINUTES", "5") if self.health_checker else "off",
             os.getenv("AI_SHADOW_PAPER_INTERVAL_MINUTES", "1") if paper_enabled else "off",
+            os.getenv("OKX_READONLY_SYNC_INTERVAL_MINUTES", "1") if execution_sync_enabled else "off",
         )
 
     def _recover_missed_tasks(self):
