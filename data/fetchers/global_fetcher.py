@@ -43,6 +43,22 @@ def _date_str(d):
     return s
 
 
+def _sort_records_chronologically(records):
+    """Normalize source order before repository quality validation.
+
+    Several AKShare tables are returned newest-first.  Their order is not a
+    data-quality defect, so store valid observations oldest-first and reserve
+    warnings for an actual schema/value problem.
+    """
+    def key(record):
+        parsed = pd.to_datetime(record.get("date"), errors="coerce")
+        if pd.isna(parsed):
+            return (1, "")
+        return (0, parsed.strftime("%Y-%m-%dT%H:%M:%S"))
+
+    return sorted(records, key=key)
+
+
 def _post_process(df, pp):
     records = []
     def keyword_column(keywords, fallback=1):
@@ -128,7 +144,7 @@ def _post_process(df, pp):
             v = _try_float(row[df.columns[1]]) if len(df.columns) > 1 else None
             if v is not None:
                 records.append({"date": _date_str(row[df.columns[0]]), "value": v})
-    return records
+    return _sort_records_chronologically(records)
 
 
 def _candidate_fetch_kwargs(meta, candidate, post_process):
@@ -216,9 +232,18 @@ def fetch_global_data(delay=2.0, incremental=True):
                 print(f"  [{i+1}/{len(symbols)}] {name}: no new records ({resolved_func})")
                 continue
 
-            write_result = upsert_time_series("akshare", sid, records)
+            write_result = upsert_time_series(
+                "akshare",
+                sid,
+                records,
+                # A full refresh is an explicit source revalidation.  It
+                # clears old audit items for this series, while any issue in
+                # the current response is immediately re-opened by the write.
+                reset_existing_quality_issues=not incremental,
+            )
             accepted = int(write_result.get("accepted", 0))
             rejected = write_result.get("rejected", [])
+            resolved_existing = int(write_result.get("resolved_existing", 0))
             if not accepted:
                 raise ValueError(
                     f"All {len(records)} records rejected by date/value/range validation"
@@ -233,9 +258,10 @@ def fetch_global_data(delay=2.0, incremental=True):
             log_fetch("akshare", sid, "success", accepted)
             fallback_note = f"; fallback={resolved_func}" if used_fallback else ""
             rejected_note = f"; rejected={len(rejected)}" if rejected else ""
+            resolved_note = f"; resolved_legacy_quality={resolved_existing}" if resolved_existing else ""
             print(
                 f"  [{i+1}/{len(symbols)}] {name}: {accepted} recs, "
-                f"latest={records[-1]}{fallback_note}{rejected_note}"
+                f"latest={records[-1]}{fallback_note}{rejected_note}{resolved_note}"
             )
         except Exception as e:
             log_fetch("akshare", sid, "error", error_message=str(e))

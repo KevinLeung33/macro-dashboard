@@ -155,6 +155,8 @@ def _probe_rss_candidates():
     probe_feed("Caixin current RSSHub", "https://rsshub.app/caixin/latest", configured_ua)
     probe_feed("Caixin RSSHub mirror (trial)", "https://rss.ovh/caixin/latest", configured_ua)
     probe_feed("The Block current configured URL", "https://www.theblock.co/rss.xml", configured_ua)
+    probe_feed("Wu Blockchain current www", "https://www.wublock123.com/feed", configured_ua)
+    probe_feed("Wu Blockchain no-www candidate", "https://wublock123.com/feed", configured_ua)
 
     # Official, low-maintenance additions for macro release awareness.  They
     # are intentionally tested but are not registered in RSS_FEEDS yet.

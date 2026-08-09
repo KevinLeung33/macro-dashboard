@@ -92,7 +92,7 @@ python -c "from data.pipeline import fetch_all; fetch_all(incremental=True)"
 - `crypto_liquidity`：DefiLlama 稳定币数据，Kraken/Coinbase ETH/BTC。
 - `crypto_market`：Binance 公共接口的 BTC 资金费率和持仓量历史。
 - `crypto_flows`：可选配置的 BTC ETF flows 和交易所净流入 CSV/JSON 适配器。
-- `news`：官方/媒体 RSS（含美联储、SEC、EIA、国家统计局、ECB、吴说）；RSS 原文快速刷新，AI 分析单独低频运行。Alpha Vantage 新闻默认关闭，避免免费 Key 的 25 次/日额度被定时任务耗尽。BLS、Reuters 和 The Block 如在服务器被 403/404 拦截，会从正式订阅中退役而保留历史状态；这不影响 FRED 宏观数据。
+- `news`：官方/媒体 RSS（含美联储、SEC、EIA、国家统计局、ECB、吴说）；RSS 原文快速刷新，AI 分析单独低频运行。官方源是健康告警的基础；吴说、CoinDesk 等第三方媒体源为可降级补充，失败会保留状态但默认不触发 P1/P2 推送。Alpha Vantage 新闻默认关闭，避免免费 Key 的 25 次/日额度被定时任务耗尽。BLS、Reuters 和 The Block 如在服务器被 403/404 拦截，会从正式订阅中退役而保留历史状态；这不影响 FRED 宏观数据。
 
 Crypto 内生流动性目前包括：
 
@@ -151,7 +151,7 @@ fetch_all(incremental=False)
 - 指标是否超出配置的有效范围。
 - 抓取记录是否出现日期倒退。
 
-被拒绝的记录不会覆盖正常数据，并会写入 `data_quality_issues` 表。首页数据健康区会显示未解决的质量提醒数量；出现提醒时，应先检查来源和数据口径，再决定是否恢复或修正数据。
+被拒绝的记录不会覆盖正常数据，并会写入 `data_quality_issues` 表。首页数据健康区会显示未解决的质量提醒数量；出现提醒时，应先检查来源和数据口径，再决定是否恢复或修正数据。显式执行一次全量刷新会重新验证该序列：旧问题先标记为已解决，若当前响应仍有相同问题会立即重新打开，因此历史解析遗留不会永久告警。
 
 ## 5. AI 日报
 
@@ -530,7 +530,7 @@ source .venv/bin/activate
 python probe_candidate_sources.py
 ```
 
-脚本不会写数据库、不会修改 `.env`、不会调用 AI。它会复测当前失败的 BLS、Reuters、Caixin、The Block 路径，测试国家统计局和 ECB 的官方 RSS，并测试 BLS API、AKShare 的替代宏观接口；如在 `.env` 临时配置 `FINNHUB_API_KEY` 或 `TUSHARE_TOKEN`，还会各发起一次最小 API 请求。只有在服务器实测通过后才接入；国家统计局和 ECB 是优先的正式官方源，财新 RSS 镜像则需要显式设置 `CAIXIN_RSS_MIRROR_URL` 才会启用。
+脚本不会写数据库、不会修改 `.env`、不会调用 AI。它会复测当前失败的 BLS、Reuters、Caixin、The Block 路径，并对吴说的 `www` 与非 `www` RSS 地址做服务器实测，测试国家统计局和 ECB 的官方 RSS，并测试 BLS API、AKShare 的替代宏观接口；如在 `.env` 临时配置 `FINNHUB_API_KEY` 或 `TUSHARE_TOKEN`，还会各发起一次最小 API 请求。只有在服务器实测通过后才接入；国家统计局和 ECB 是优先的正式官方源，财新 RSS 镜像则需要显式设置 `CAIXIN_RSS_MIRROR_URL` 才会启用。
 
 `NOTIFY_CHANNELS` 支持 `telegram,lark,email,webhook`，并会自动忽略逗号两侧空格。服务器任务失败和运行告警读取这里的渠道配置；网页“通知规则”中的渠道主要用于紧急新闻推送。Alpha Vantage 新闻和行情使用同一个 `ALPHA_VANTAGE_KEY`；不再读取 `FINNHUB_API_KEY`。
 

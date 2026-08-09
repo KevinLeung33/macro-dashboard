@@ -147,6 +147,22 @@ def _db_diagnostics():
                 count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 print(f"  {table}: {count}")
 
+        if "data_quality_issues" in tables:
+            print("unresolved_quality_issues_by_series:")
+            rows = conn.execute(
+                """SELECT source, series_id, issue_type, message, COUNT(*) AS issue_count,
+                          MIN(created_at) AS first_seen, MAX(created_at) AS last_seen
+                   FROM data_quality_issues
+                   WHERE resolved = 0
+                   GROUP BY source, series_id, issue_type, message
+                   ORDER BY issue_count DESC, source, series_id
+                   LIMIT 30"""
+            ).fetchall()
+            if not rows:
+                print("  none")
+            for row in rows:
+                print("  ", tuple(row))
+
         malformed = conn.execute(
             """SELECT source, series_id, date, value
                FROM time_series

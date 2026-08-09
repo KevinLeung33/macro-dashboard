@@ -230,13 +230,18 @@ def _rss_issues():
         # Keep historical state for auditability, but monitor only feeds that
         # are still configured. Retired 403/404 sources must not keep a new
         # deployment in warning state forever.
-        from services.news_fetcher import RSS_FEEDS
+        from services.news_fetcher import RSS_FEEDS, RSS_OPTIONAL_SOURCES
         active_sources = set(RSS_FEEDS)
+        optional_sources = set(RSS_OPTIONAL_SOURCES)
     except Exception:
         active_sources = None
+        optional_sources = set()
+    alert_optional_sources = _env_csv("HEALTH_RSS_ALERT_OPTIONAL_SOURCES", "")
     for row in rows:
         source = row["source"]
         if active_sources is not None and source not in active_sources:
+            continue
+        if source in optional_sources and source.lower() not in alert_optional_sources:
             continue
         if row["last_error"]:
             warnings.append(f"RSS {source} 最近失败：{str(row['last_error'])[:150]}")

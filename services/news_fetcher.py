@@ -61,6 +61,14 @@ RSS_SOURCE_PRIORITY = {
     "Cointelegraph": 3,
 }
 
+# These are useful breadth sources, but one publisher timing out must not make
+# the whole macro/news pipeline look unhealthy. Their state remains visible in
+# the dashboard and database; the health monitor only pages on core releases.
+RSS_OPTIONAL_SOURCES = {
+    "CNBC Top", "MarketWatch", "Caixin (RSS mirror)",
+    "CoinDesk", "Cointelegraph", "Wu Blockchain",
+}
+
 
 def _env_int(name, default):
     try:
@@ -113,6 +121,7 @@ def fetch_rss(feeds=None):
     added = 0
     max_entries = _env_int("RSS_MAX_ENTRIES_PER_FEED", 30)
     timeout = _env_float("NEWS_HTTP_TIMEOUT_SECONDS", 20)
+    optional_timeout = min(timeout, _env_float("NEWS_OPTIONAL_HTTP_TIMEOUT_SECONDS", 8))
     for source_name, url in feeds.items():
         try:
             # 直接用 requests 设置超时和 UA；feedparser.parse(url) 没有可靠的
@@ -127,7 +136,7 @@ def fetch_rss(feeds=None):
             response = requests.get(
                 url,
                 headers=headers,
-                timeout=timeout,
+                timeout=optional_timeout if source_name in RSS_OPTIONAL_SOURCES else timeout,
             )
             if response.status_code == 304:
                 update_news_feed_state(

@@ -84,9 +84,45 @@ def _prepare_time_series_records(source, series_id, records):
     return prepared, rejected
 
 
-def upsert_time_series(source, series_id, records):
+def _record_data_quality_issue(
+    conn, *, fingerprint, source, series_id, observed_date, issue_type, message, raw_value
+):
+    """Persist an issue and reopen it if the exact problem recurs.
+
+    Resolved issues are retained as audit history.  Reopening the same
+    fingerprint is important: a later full-source revalidation may clear an
+    old parser problem, but a recurrence must become visible again.
+    """
+    conn.execute(
+        """INSERT INTO data_quality_issues
+           (fingerprint, source, series_id, observed_date, issue_type, message, raw_value)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(fingerprint) DO UPDATE SET
+               observed_date = excluded.observed_date,
+               issue_type = excluded.issue_type,
+               message = excluded.message,
+               raw_value = excluded.raw_value,
+               resolved = 0,
+               created_at = CURRENT_TIMESTAMP""",
+        (fingerprint, source, series_id, observed_date, issue_type, message, raw_value),
+    )
+
+
+def upsert_time_series(source, series_id, records, *, reset_existing_quality_issues=False):
     prepared, rejected = _prepare_time_series_records(source, series_id, records)
     with get_db() as conn:
+        resolved_existing = 0
+        if reset_existing_quality_issues:
+            # A non-incremental rebuild is an explicit revalidation of the
+            # complete series.  Clear the old audit baseline first; any issue
+            # still present in this response is immediately recreated below.
+            cur = conn.execute(
+                """UPDATE data_quality_issues
+                   SET resolved = 1
+                   WHERE source = ? AND series_id = ? AND resolved = 0""",
+                (source, series_id),
+            )
+            resolved_existing = max(0, int(cur.rowcount or 0))
         for r in prepared:
             conn.execute(
                 """INSERT OR REPLACE INTO time_series
@@ -106,27 +142,36 @@ def upsert_time_series(source, series_id, records):
             fingerprint = hashlib.sha256(
                 f"{source}|{series_id}|{observed_date}|{message}|{raw_value}".encode("utf-8")
             ).hexdigest()
-            conn.execute(
-                """INSERT OR IGNORE INTO data_quality_issues
-                   (fingerprint, source, series_id, observed_date, issue_type, message, raw_value)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (fingerprint, source, series_id, observed_date, "rejected_record", message, raw_value),
+            _record_data_quality_issue(
+                conn,
+                fingerprint=fingerprint,
+                source=source,
+                series_id=series_id,
+                observed_date=observed_date,
+                issue_type="rejected_record",
+                message=message,
+                raw_value=raw_value,
             )
         for record in prepared:
             if record["quality_status"] != "valid":
                 fingerprint = hashlib.sha256(
                     f"{source}|{series_id}|{record['date']}|{record['quality_message']}".encode("utf-8")
                 ).hexdigest()
-                conn.execute(
-                    """INSERT OR IGNORE INTO data_quality_issues
-                       (fingerprint, source, series_id, observed_date, issue_type, message, raw_value)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        fingerprint, source, series_id, record["date"], "warning",
-                        record["quality_message"], str(record["value"]),
-                    ),
+                _record_data_quality_issue(
+                    conn,
+                    fingerprint=fingerprint,
+                    source=source,
+                    series_id=series_id,
+                    observed_date=record["date"],
+                    issue_type="warning",
+                    message=record["quality_message"],
+                    raw_value=str(record["value"]),
                 )
-    return {"accepted": len(prepared), "rejected": rejected}
+    return {
+        "accepted": len(prepared),
+        "rejected": rejected,
+        "resolved_existing": resolved_existing,
+    }
 
 
 def upsert_series_meta(source, series_id, meta):
@@ -208,8 +253,24 @@ def query_latest_values(source, category=None):
 def query_source_health():
     """Return one health row per source from stored time series and fetch logs."""
     from config.data_sources import DATA_SOURCES
+    from config.series_definitions import AKSHARE_SERIES
 
     known_sources = set(DATA_SOURCES)
+    active_akshare_series = [
+        series_id for series_id, meta in AKSHARE_SERIES.items()
+        if meta.get("enabled", True)
+    ]
+    active_akshare_placeholders = ", ".join("?" for _ in active_akshare_series)
+    quality_series_filter = ""
+    quality_params = []
+    if active_akshare_placeholders:
+        # Audit rows for deliberately paused China indicators remain in SQLite,
+        # but cannot make the active AKShare source look unhealthy forever.
+        quality_series_filter = (
+            "AND (qi.source != 'akshare' OR qi.series_id IN "
+            f"({active_akshare_placeholders}))"
+        )
+        quality_params = active_akshare_series
     with get_db() as conn:
         rows = conn.execute(
             """SELECT
@@ -218,7 +279,9 @@ def query_source_health():
                        WHEN ts.date GLOB '????-??-??' AND ts.value IS NOT NULL
                        THEN ts.series_id END) AS series_count,
                    (SELECT COUNT(*) FROM data_quality_issues qi
-                    WHERE qi.source = ts.source AND qi.resolved = 0) AS quality_issue_count,
+                    WHERE qi.source = ts.source AND qi.resolved = 0
+                    """ + quality_series_filter + """
+                   ) AS quality_issue_count,
                    MAX(CASE WHEN ts.date GLOB '????-??-??' THEN ts.date END) AS latest_data_date,
                    MAX(ts.fetched_at) AS latest_fetched_at,
                    fl.series_id AS last_series_id,
@@ -233,7 +296,8 @@ def query_source_health():
                    LIMIT 1
                )
                GROUP BY ts.source
-               ORDER BY ts.source"""
+               ORDER BY ts.source""",
+            quality_params,
         ).fetchall()
 
         # A source with no successfully stored rows is otherwise invisible in
