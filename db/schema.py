@@ -599,6 +599,110 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_trade_ai_reviews_note
                 ON trade_ai_reviews(note_id, created_at DESC);
 
+            -- AI 影子计划与虚拟订单：仅用于评估，不与交易所订单、持仓或 API 密钥共用。
+            -- AI 计划保存的是独立生成时的快照；comparison_json 只在生成后用于和用户计划比对，
+            -- 绝不会作为生成 AI 计划的输入。
+            CREATE TABLE IF NOT EXISTS ai_shadow_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL,
+                model TEXT DEFAULT '',
+                prompt_version TEXT DEFAULT '',
+                decision TEXT NOT NULL DEFAULT 'no_trade',
+                status TEXT NOT NULL DEFAULT 'no_trade',
+                symbol TEXT NOT NULL,
+                side TEXT DEFAULT 'flat',
+                analysis_timeframe TEXT DEFAULT '',
+                expected_horizon TEXT DEFAULT '',
+                entry_price REAL,
+                trigger_price REAL,
+                trigger_direction TEXT DEFAULT '',
+                planned_quantity REAL,
+                planned_notional_usd REAL,
+                risk_budget_pct REAL,
+                initial_risk_usd REAL,
+                stop_price REAL,
+                target_price REAL,
+                risk_reward REAL,
+                expires_at TEXT DEFAULT '',
+                time_stop_at TEXT DEFAULT '',
+                confidence REAL,
+                rationale TEXT DEFAULT '',
+                decision_json TEXT NOT NULL DEFAULT '{}',
+                snapshot_json TEXT NOT NULL DEFAULT '{}',
+                comparison_json TEXT NOT NULL DEFAULT '{}',
+                validation_error TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (note_id) REFERENCES trade_notes(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_ai_shadow_plans_note
+                ON ai_shadow_plans(note_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_ai_shadow_plans_status
+                ON ai_shadow_plans(status, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS paper_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shadow_plan_id INTEGER NOT NULL UNIQUE,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                order_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                entry_price REAL,
+                trigger_price REAL,
+                trigger_direction TEXT DEFAULT '',
+                quantity REAL NOT NULL,
+                notional_usd REAL,
+                stop_price REAL NOT NULL,
+                target_price REAL NOT NULL,
+                expires_at TEXT DEFAULT '',
+                time_stop_at TEXT DEFAULT '',
+                submitted_at TEXT NOT NULL,
+                triggered_at TEXT DEFAULT '',
+                filled_price REAL,
+                filled_at TEXT DEFAULT '',
+                close_price REAL,
+                closed_at TEXT DEFAULT '',
+                close_reason TEXT DEFAULT '',
+                fee_bps REAL DEFAULT 5,
+                slippage_bps REAL DEFAULT 2,
+                entry_fee_usd REAL DEFAULT 0,
+                exit_fee_usd REAL DEFAULT 0,
+                gross_pnl_usd REAL,
+                net_pnl_usd REAL,
+                r_multiple REAL,
+                last_market_at TEXT DEFAULT '',
+                last_checked_at TEXT DEFAULT '',
+                status_reason TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (shadow_plan_id) REFERENCES ai_shadow_plans(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_paper_orders_status
+                ON paper_orders(status, submitted_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_paper_orders_symbol
+                ON paper_orders(symbol, submitted_at DESC);
+
+            CREATE TABLE IF NOT EXISTS paper_order_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_order_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                from_status TEXT DEFAULT '',
+                to_status TEXT DEFAULT '',
+                price REAL,
+                event_at TEXT NOT NULL,
+                reason TEXT DEFAULT '',
+                market_snapshot_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (paper_order_id) REFERENCES paper_orders(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_paper_order_events_order
+                ON paper_order_events(paper_order_id, event_at DESC);
+
             CREATE TABLE IF NOT EXISTS news_cluster_indicator_links (
                 cluster_id INTEGER NOT NULL,
                 source TEXT NOT NULL,

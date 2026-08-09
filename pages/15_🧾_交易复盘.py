@@ -7,7 +7,10 @@ import streamlit as st
 
 from db.repository import (
     insert_trade_note,
+    query_ai_shadow_plans,
     query_latest_trade_account_snapshot,
+    query_paper_order_events,
+    query_paper_orders,
     query_trade_ai_reviews,
     query_trade_fills,
     query_trade_notes,
@@ -18,6 +21,9 @@ from db.repository import (
 )
 from db.schema import init_db
 from services.access_control import render_admin_access, require_admin
+from services.ai_shadow_config import shadow_constraints
+from services.ai_shadow_plan import generate_ai_shadow_plan
+from services.paper_trading import cancel_pending_paper_order, run_paper_trading
 from services.trade_review import review_trade_note
 from services.okx_readonly import OKXReadOnlyClient, sync_okx_readonly_account
 from services.trade_plan_context import build_trade_plan_snapshot
@@ -27,13 +33,14 @@ from services.trade_plan_feedback import generate_trade_plan_feedback
 st.set_page_config(page_title="交易复盘", page_icon="🧾", layout="wide")
 admin_access = render_admin_access()
 st.title("🧾 Crypto 交易复盘")
-st.caption("记录交易计划、真实订单与事后点评；本页没有下单接口，也不会接入虚拟成交。")
+st.caption("记录你的计划与真实只读订单，并用独立 AI 影子账户做本地虚拟订单比较；没有真实下单接口。")
 init_db()
 
 st.info(
     "交易计划会保存当时的宏观、新闻、数据新鲜度和 OKX 公开 K 线快照。"
     "“计划环境反馈”由你主动触发，只指出证据、矛盾和风险，不批准、阻止或执行交易；"
-    "计划入场价与本地挂单状态可编辑，OKX 账户同步始终只读。"
+    "AI 影子计划生成时不会读取你的方向、价格、仓位、理由或真实订单；"
+    "虚拟成交只写本地数据库，OKX 账户同步始终只读。"
 )
 
 
@@ -80,6 +87,22 @@ PLAN_STATUS_LABELS = {
 }
 PENDING_PLAN_STATUSES = {"planned", "waiting_trigger", "open", "partially_filled"}
 OPEN_EXCHANGE_ORDER_STATUSES = {"live", "partially_filled", "effective"}
+AI_SHADOW_DECISION_LABELS = {
+    "no_trade": "不交易",
+    "watch": "观察等待",
+    "limit": "限价虚拟挂单",
+    "trigger_limit": "条件限价虚拟挂单",
+    "trigger_market": "条件市价虚拟单",
+    "market": "市价虚拟单",
+}
+PAPER_ORDER_STATUS_LABELS = {
+    "waiting_trigger": "等待触发",
+    "pending": "等待限价成交",
+    "open": "已虚拟成交 / 持仓中",
+    "closed": "已平仓",
+    "expired": "挂单已过期",
+    "cancelled": "已取消",
+}
 
 
 def _number_or_none(value):
@@ -165,6 +188,8 @@ snapshot = query_latest_trade_account_snapshot("OKX", account_label)
 positions = query_trade_positions("OKX", account_label, limit=100)
 orders = query_trade_orders("OKX", account_label, limit=100)
 fills = query_trade_fills("OKX", account_label, limit=200)
+paper_orders = query_paper_orders(limit=200)
+shadow_plans = query_ai_shadow_plans(limit=200)
 sync_result = st.session_state.get("okx_sync_result") or {}
 with mode_col:
     if snapshot:
@@ -230,6 +255,7 @@ chart_plan_notes = query_trade_notes(limit=100)
 symbol_options = sorted({
     str(row["symbol"])
     for row in list(positions) + list(orders) + list(fills) + list(chart_plan_notes)
+    + list(paper_orders) + list(shadow_plans)
     if row["symbol"]
 })
 if symbol_options:
@@ -335,10 +361,73 @@ if symbol_options:
                         )
                     if planned_lines >= 10:
                         break
+                chart_paper_orders = [
+                    dict(row) for row in paper_orders
+                    if _symbol_key(row["symbol"]) == chart_key
+                ]
+                paper_lines = 0
+                paper_fills = [
+                    item for item in chart_paper_orders
+                    if item.get("filled_at") and _number_or_none(item.get("filled_price")) is not None
+                ]
+                if paper_fills:
+                    paper_fill_df = pd.DataFrame(paper_fills)
+                    paper_fill_df["filled_at"] = pd.to_datetime(paper_fill_df["filled_at"], utc=True)
+                    fig.add_scatter(
+                        x=paper_fill_df["filled_at"], y=paper_fill_df["filled_price"], mode="markers",
+                        name="AI 虚拟成交", marker={"color": "#9b59b6", "size": 9, "symbol": "diamond"},
+                        hovertext=paper_fill_df["status"].astype(str),
+                    )
+                for paper in chart_paper_orders[:10]:
+                    paper_status = str(paper.get("status") or "")
+                    if paper_status not in {"waiting_trigger", "pending", "open"}:
+                        continue
+                    paper_id = str(paper.get("id") or "")
+                    entry_price = _number_or_none(paper.get("entry_price"))
+                    side_text = str(paper.get("side") or "").lower()
+                    color = "#7d3c98" if side_text == "long" else "#884c33"
+                    if entry_price is not None:
+                        fig.add_hline(
+                            y=entry_price,
+                            line_dash="dashdot" if paper_status != "open" else "solid",
+                            line_color=color,
+                            annotation_text=(
+                                f"AI 虚拟 #{paper_id} · "
+                                f"{PAPER_ORDER_STATUS_LABELS.get(paper_status, paper_status)}"
+                            ),
+                            annotation_position="top left",
+                            annotation_font_color=color,
+                        )
+                    trigger_price = _number_or_none(paper.get("trigger_price"))
+                    if paper_status == "waiting_trigger" and trigger_price is not None:
+                        fig.add_hline(
+                            y=trigger_price,
+                            line_dash="dot",
+                            line_color="#f39c12",
+                            annotation_text=f"AI 虚拟 #{paper_id} 触发价",
+                            annotation_position="bottom right",
+                            annotation_font_color="#f39c12",
+                        )
+                    if paper_status == "open":
+                        for level, label, line_color in (
+                            (paper.get("stop_price"), "止损", "#e74c3c"),
+                            (paper.get("target_price"), "目标", "#00a67d"),
+                        ):
+                            level = _number_or_none(level)
+                            if level is not None:
+                                fig.add_hline(
+                                    y=level,
+                                    line_dash="dot",
+                                    line_color=line_color,
+                                    annotation_text=f"AI 虚拟 #{paper_id} {label}",
+                                    annotation_position="bottom left",
+                                    annotation_font_color=line_color,
+                                )
+                    paper_lines += 1
                 fig.update_layout(height=520, xaxis_rangeslider_visible=False, margin={"l": 20, "r": 20, "t": 30, "b": 20})
                 st.plotly_chart(fig, use_container_width=True)
-                if chart_orders or planned_lines:
-                    st.caption("图中虚线为已同步的 OKX 待成交订单；点线为本地交易计划的待执行入场价；三角形为实际成交。")
+                if chart_orders or planned_lines or paper_lines:
+                    st.caption("图中虚线为已同步的 OKX 待成交订单；点线为本地交易计划；紫色线/菱形为 AI 本地虚拟订单与成交；三角形为实际成交。")
                 last = candles[-1]
                 first = candles[0]
                 return_pct = ((last["close"] / first["close"] - 1) * 100) if first.get("close") else None
@@ -347,6 +436,7 @@ if symbol_options:
                     "window_return_pct": return_pct, "fill_count_on_chart": len(chart_fills),
                     "open_order_count_on_chart": len(chart_orders),
                     "planned_entry_count_on_chart": planned_lines,
+                    "ai_paper_order_count_on_chart": paper_lines,
                 }
         except Exception as exc:
             st.error(f"K 线读取失败：{exc}")
@@ -655,6 +745,155 @@ else:
         snapshot_cols[3].metric("24 Bar变化", _pct_label((live_context.get("returns_pct") or {}).get("24_bars")))
         with st.expander("查看计划创建时的数据快照", expanded=False):
             st.json(plan_snapshot)
+
+    st.markdown("### 🤖 AI 独立影子计划（本地虚拟订单）")
+    st.caption(
+        "生成阶段只传入交易对与一份新鲜市场快照，不传入你的方向、入场价、止损、仓位、理由或真实订单。"
+        "生成完成后才做对比；影子订单只写本地数据库。"
+    )
+    selected_shadow_plans = [
+        dict(row) for row in shadow_plans if int(row["note_id"]) == int(selected_id)
+    ]
+    selected_shadow_ids = {item["id"] for item in selected_shadow_plans}
+    selected_paper_orders = [
+        dict(row) for row in paper_orders if row["shadow_plan_id"] in selected_shadow_ids
+    ]
+    active_paper_orders = [
+        item for item in selected_paper_orders
+        if item.get("status") in {"waiting_trigger", "pending", "open"}
+    ]
+    shadow_action_col, paper_check_col, shadow_info_col = st.columns([1.35, 1.1, 2.55])
+    with shadow_action_col:
+        generate_shadow = st.button(
+            "✨ 生成独立 AI 影子计划",
+            type="primary",
+            disabled=(not admin_access) or bool(active_paper_orders),
+            key=f"ai_shadow_plan_{selected_id}",
+        )
+    with paper_check_col:
+        check_paper = st.button(
+            "🔄 检查虚拟订单",
+            disabled=not admin_access,
+            key=f"ai_paper_check_{selected_id}",
+        )
+    with shadow_info_col:
+        constraints = shadow_constraints()
+        st.caption(
+            f"虚拟账户 ${constraints['virtual_equity_usd']:,.0f} · 单笔最大风险 {constraints['max_risk_pct']:.2%} · "
+            f"最低 R/R {constraints['min_risk_reward']:.2f} · 费用 {constraints['fee_bps']:.1f}bp · "
+            f"滑点 {constraints['slippage_bps']:.1f}bp"
+        )
+        if active_paper_orders:
+            st.caption("当前已有未结束的 AI 虚拟订单；为避免重复计分，请先等待其结束。")
+
+    if generate_shadow and require_admin("生成独立 AI 影子计划"):
+        with st.spinner("AI 正在基于独立市场快照生成虚拟计划……"):
+            try:
+                generated = generate_ai_shadow_plan(selected_id)
+                st.session_state["ai_shadow_last_result"] = generated
+                st.success("AI 影子计划已保存；它没有读取你的计划字段，也没有发送任何真实订单。")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"AI 影子计划生成失败：{exc}")
+
+    if check_paper and require_admin("检查 AI 虚拟订单"):
+        with st.spinner("正在读取 OKX 公开 1 分钟 K 线并推进本地虚拟订单……"):
+            try:
+                result = run_paper_trading()
+                st.session_state["ai_paper_last_result"] = result
+                st.success(f"已检查 {result.get('checked', 0)} 笔虚拟订单，状态变化 {result.get('changed', 0)} 笔。")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"虚拟订单检查失败：{exc}")
+
+    latest_paper_result = st.session_state.get("ai_paper_last_result") or {}
+    if latest_paper_result.get("errors"):
+        st.caption("最近一次虚拟订单检查有数据读取问题：" + "；".join(latest_paper_result["errors"][:2]))
+
+    if not selected_shadow_plans:
+        st.info("尚未生成独立 AI 影子计划。它可以选择不交易、观察、限价挂单或条件单。")
+    else:
+        latest_shadow = selected_shadow_plans[0]
+        latest_decision = _json_object(latest_shadow["decision_json"])
+        latest_comparison = _json_object(latest_shadow["comparison_json"])
+        latest_paper = next(
+            (item for item in selected_paper_orders if item["shadow_plan_id"] == latest_shadow["id"]),
+            None,
+        )
+        shadow_cols = st.columns(5)
+        shadow_cols[0].metric("AI 决策", AI_SHADOW_DECISION_LABELS.get(latest_shadow["decision"], latest_shadow["decision"]))
+        shadow_cols[1].metric("方向", str(latest_shadow["side"] or "flat").upper())
+        shadow_cols[2].metric("虚拟入场", _number_label(latest_shadow["entry_price"]))
+        shadow_cols[3].metric("风险收益比", "—" if latest_shadow["risk_reward"] is None else f"{latest_shadow['risk_reward']:.2f}")
+        shadow_cols[4].metric(
+            "虚拟状态",
+            PAPER_ORDER_STATUS_LABELS.get(
+                (latest_paper or {}).get("status", latest_shadow["status"]),
+                (latest_paper or {}).get("status", latest_shadow["status"]),
+            ),
+        )
+        st.write(latest_shadow["rationale"] or latest_decision.get("no_trade_reason") or "AI 未提供理由。")
+        st.caption(
+            f"AI 快照：{str(latest_shadow['created_at'])[:19]} · 周期：{latest_shadow['analysis_timeframe'] or '—'} · "
+            f"预期持仓：{latest_shadow['expected_horizon'] or '—'} · 置信度：{(latest_shadow['confidence'] or 0):.0%}"
+        )
+        if latest_shadow["decision"] in {"no_trade", "watch"}:
+            st.caption("AI 没有创建虚拟订单；“不交易”会被保留进长期统计，不能被当成缺失样本。")
+        if latest_paper:
+            st.caption(
+                f"虚拟订单 #{latest_paper['id']} · 数量 {_number_label(latest_paper['quantity'])} · "
+                f"止损 {_number_label(latest_paper['stop_price'])} · 目标 {_number_label(latest_paper['target_price'])} · "
+                f"挂单到期 {latest_paper['expires_at'] or '—'} · 时间止损 {latest_paper['time_stop_at'] or '—'}"
+            )
+            if latest_paper["status"] == "closed":
+                net_pnl = latest_paper["net_pnl_usd"]
+                r_multiple = latest_paper["r_multiple"]
+                st.caption(
+                    f"已按 {latest_paper['close_reason'] or '—'} 平仓 · 净虚拟盈亏 "
+                    f"${(net_pnl or 0):+,.2f} · R 倍数 {'—' if r_multiple is None else f'{r_multiple:+.2f}'}"
+                )
+            if latest_paper["status"] in {"waiting_trigger", "pending"}:
+                if st.button(
+                    "取消这笔本地虚拟挂单",
+                    disabled=not admin_access,
+                    key=f"cancel_ai_paper_{latest_paper['id']}",
+                ) and require_admin("取消 AI 虚拟挂单"):
+                    try:
+                        cancel_pending_paper_order(latest_paper["id"])
+                        st.success("已取消本地虚拟挂单；真实 OKX 订单没有被触碰。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"取消虚拟挂单失败：{exc}")
+            events = query_paper_order_events(latest_paper["id"], limit=20)
+            if events:
+                event_df = pd.DataFrame(_row_dicts(events))
+                with st.expander("查看 AI 虚拟订单事件", expanded=False):
+                    st.dataframe(
+                        event_df[[column for column in ("event_at", "event_type", "from_status", "to_status", "price", "reason") if column in event_df.columns]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+        st.markdown("**与你的计划比较**")
+        st.write(latest_comparison.get("summary_cn") or "暂无可用对比。")
+        if latest_comparison.get("independence"):
+            st.caption(latest_comparison["independence"])
+        comparison_cols = st.columns(3)
+        comparison_cols[0].metric("方向关系", latest_comparison.get("direction_relation") or "—")
+        entry_delta = latest_comparison.get("entry_price_delta_pct")
+        comparison_cols[1].metric("入场价差", "—" if entry_delta is None else f"{entry_delta:+.2f}%")
+        user_rr = (latest_comparison.get("user_plan") or {}).get("risk_reward")
+        comparison_cols[2].metric("用户计划 R/R", "—" if user_rr is None else f"{user_rr:.2f}")
+        for title, key, expanded in (("主要差异", "differences", True), ("共同风险/数据限制", "shared_risks", False)):
+            values = latest_comparison.get(key) or []
+            if values:
+                with st.expander(title, expanded=expanded):
+                    _render_text_list(values)
+        for title, key in (("AI 使用的证据", "evidence"), ("AI 需要持续验证的条件", "conditions"), ("AI 数据缺口", "data_gaps")):
+            values = latest_decision.get(key) or []
+            if values:
+                with st.expander(title, expanded=False):
+                    _render_text_list(values)
 
     st.markdown("### 计划环境反馈")
     refresh_plan_context = st.checkbox(

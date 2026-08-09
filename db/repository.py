@@ -1937,3 +1937,224 @@ def query_trade_ai_reviews(note_id=None, limit=100):
             "SELECT * FROM trade_ai_reviews ORDER BY created_at DESC, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
+
+
+# ====== AI shadow plans and local paper orders ======
+
+def insert_ai_shadow_plan(plan):
+    """Persist an independently generated AI shadow plan.
+
+    ``plan`` is a local research record.  It never contains exchange credentials
+    and it is deliberately separate from ``trade_orders`` / ``trade_positions``.
+    """
+    values = (
+        plan.get("note_id"), plan.get("model", ""), plan.get("prompt_version", ""),
+        plan.get("decision", "no_trade"), plan.get("status", "no_trade"),
+        plan.get("symbol", ""), plan.get("side", "flat"),
+        plan.get("analysis_timeframe", ""), plan.get("expected_horizon", ""),
+        plan.get("entry_price"), plan.get("trigger_price"), plan.get("trigger_direction", ""),
+        plan.get("planned_quantity"), plan.get("planned_notional_usd"),
+        plan.get("risk_budget_pct"), plan.get("initial_risk_usd"),
+        plan.get("stop_price"), plan.get("target_price"), plan.get("risk_reward"),
+        plan.get("expires_at", ""), plan.get("time_stop_at", ""), plan.get("confidence"),
+        plan.get("rationale", ""), _json_text(plan.get("decision_json", {})),
+        _json_text(plan.get("snapshot_json", {})), _json_text(plan.get("comparison_json", {})),
+        plan.get("validation_error", ""),
+    )
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO ai_shadow_plans
+               (note_id, model, prompt_version, decision, status, symbol, side,
+                analysis_timeframe, expected_horizon, entry_price, trigger_price,
+                trigger_direction, planned_quantity, planned_notional_usd, risk_budget_pct,
+                initial_risk_usd, stop_price, target_price, risk_reward, expires_at,
+                time_stop_at, confidence, rationale, decision_json, snapshot_json,
+                comparison_json, validation_error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            values,
+        )
+        return cur.lastrowid
+
+
+def get_ai_shadow_plan(shadow_plan_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM ai_shadow_plans WHERE id = ?", (shadow_plan_id,)
+        ).fetchone()
+
+
+def query_ai_shadow_plans(note_id=None, statuses=None, symbol=None, limit=100):
+    with get_db() as conn:
+        clauses = []
+        values = []
+        for column, value in (("note_id", note_id), ("symbol", symbol)):
+            if value not in (None, ""):
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        if statuses:
+            if isinstance(statuses, str):
+                statuses = [statuses]
+            statuses = [str(item) for item in statuses if str(item)]
+            if statuses:
+                clauses.append("status IN (" + ", ".join("?" for _ in statuses) + ")")
+                values.extend(statuses)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.append(limit)
+        return conn.execute(
+            f"SELECT * FROM ai_shadow_plans{where} ORDER BY created_at DESC, id DESC LIMIT ?",
+            values,
+        ).fetchall()
+
+
+def update_ai_shadow_plan_status(shadow_plan_id, status, validation_error=None):
+    """Update local shadow-plan lifecycle state; never calls an exchange."""
+    with get_db() as conn:
+        if validation_error is None:
+            cur = conn.execute(
+                """UPDATE ai_shadow_plans
+                   SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                (status, shadow_plan_id),
+            )
+        else:
+            cur = conn.execute(
+                """UPDATE ai_shadow_plans
+                   SET status = ?, validation_error = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (status, validation_error or "", shadow_plan_id),
+            )
+        return bool(cur.rowcount)
+
+
+def update_ai_shadow_plan_comparison(shadow_plan_id, comparison):
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE ai_shadow_plans
+               SET comparison_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+            (_json_text(comparison or {}), shadow_plan_id),
+        )
+        return bool(cur.rowcount)
+
+
+def insert_paper_order(order):
+    """Create one AI-only virtual order.  No exchange request is made here."""
+    values = (
+        order.get("shadow_plan_id"), order.get("symbol", ""), order.get("side", ""),
+        order.get("order_type", ""), order.get("status", "pending"), order.get("entry_price"),
+        order.get("trigger_price"), order.get("trigger_direction", ""), order.get("quantity"),
+        order.get("notional_usd"), order.get("stop_price"), order.get("target_price"),
+        order.get("expires_at", ""), order.get("time_stop_at", ""), order.get("submitted_at", ""),
+        order.get("triggered_at", ""), order.get("filled_price"), order.get("filled_at", ""),
+        order.get("close_price"), order.get("closed_at", ""), order.get("close_reason", ""),
+        order.get("fee_bps", 5), order.get("slippage_bps", 2), order.get("entry_fee_usd", 0),
+        order.get("exit_fee_usd", 0), order.get("gross_pnl_usd"), order.get("net_pnl_usd"),
+        order.get("r_multiple"), order.get("last_market_at", ""), order.get("last_checked_at", ""),
+        order.get("status_reason", ""),
+    )
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO paper_orders
+               (shadow_plan_id, symbol, side, order_type, status, entry_price, trigger_price,
+                trigger_direction, quantity, notional_usd, stop_price, target_price, expires_at,
+                time_stop_at, submitted_at, triggered_at, filled_price, filled_at, close_price,
+                closed_at, close_reason, fee_bps, slippage_bps, entry_fee_usd, exit_fee_usd,
+                gross_pnl_usd, net_pnl_usd, r_multiple, last_market_at, last_checked_at,
+                status_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            values,
+        )
+        return cur.lastrowid
+
+
+def get_paper_order(paper_order_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM paper_orders WHERE id = ?", (paper_order_id,)
+        ).fetchone()
+
+
+def get_paper_order_by_shadow_plan(shadow_plan_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT * FROM paper_orders WHERE shadow_plan_id = ?", (shadow_plan_id,)
+        ).fetchone()
+
+
+def query_paper_orders(shadow_plan_id=None, statuses=None, symbol=None, limit=200):
+    with get_db() as conn:
+        clauses = []
+        values = []
+        for column, value in (("shadow_plan_id", shadow_plan_id), ("symbol", symbol)):
+            if value not in (None, ""):
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        if statuses:
+            if isinstance(statuses, str):
+                statuses = [statuses]
+            statuses = [str(item) for item in statuses if str(item)]
+            if statuses:
+                clauses.append("status IN (" + ", ".join("?" for _ in statuses) + ")")
+                values.extend(statuses)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.append(limit)
+        return conn.execute(
+            f"SELECT * FROM paper_orders{where} ORDER BY submitted_at DESC, id DESC LIMIT ?",
+            values,
+        ).fetchall()
+
+
+_PAPER_ORDER_UPDATE_FIELDS = {
+    "status", "entry_price", "trigger_price", "trigger_direction", "quantity", "notional_usd",
+    "stop_price", "target_price", "expires_at", "time_stop_at", "triggered_at", "filled_price",
+    "filled_at", "close_price", "closed_at", "close_reason", "fee_bps", "slippage_bps",
+    "entry_fee_usd", "exit_fee_usd", "gross_pnl_usd", "net_pnl_usd", "r_multiple",
+    "last_market_at", "last_checked_at", "status_reason",
+}
+
+
+def update_paper_order(paper_order_id, **changes):
+    """Apply a controlled local lifecycle update to a virtual order."""
+    allowed = {key: value for key, value in changes.items() if key in _PAPER_ORDER_UPDATE_FIELDS}
+    unknown = set(changes) - set(allowed)
+    if unknown:
+        raise ValueError(f"Unsupported paper order fields: {sorted(unknown)}")
+    if not allowed:
+        return False
+    assignments = [f"{field} = ?" for field in allowed]
+    values = list(allowed.values())
+    assignments.append("updated_at = CURRENT_TIMESTAMP")
+    values.append(paper_order_id)
+    with get_db() as conn:
+        cur = conn.execute(
+            f"UPDATE paper_orders SET {', '.join(assignments)} WHERE id = ?", values
+        )
+        return bool(cur.rowcount)
+
+
+def insert_paper_order_event(paper_order_id, event_type, event_at, from_status="", to_status="",
+                             price=None, reason="", market_snapshot=None):
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO paper_order_events
+               (paper_order_id, event_type, from_status, to_status, price, event_at, reason,
+                market_snapshot_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                paper_order_id, event_type or "", from_status or "", to_status or "", price,
+                event_at or "", reason or "", _json_text(market_snapshot or {}),
+            ),
+        )
+        return cur.lastrowid
+
+
+def query_paper_order_events(paper_order_id=None, limit=200):
+    with get_db() as conn:
+        if paper_order_id:
+            return conn.execute(
+                """SELECT * FROM paper_order_events WHERE paper_order_id = ?
+                   ORDER BY event_at DESC, id DESC LIMIT ?""",
+                (paper_order_id, limit),
+            ).fetchall()
+        return conn.execute(
+            "SELECT * FROM paper_order_events ORDER BY event_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()

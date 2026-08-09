@@ -54,6 +54,65 @@ def _pct_change(values, bars):
     return round((values[-1] / values[-bars - 1] - 1) * 100, 4)
 
 
+def _mean(values):
+    values = [float(value) for value in values if value is not None]
+    return round(sum(values) / len(values), 8) if values else None
+
+
+def _technical_context(candles):
+    """Derive small deterministic technical facts for plans and shadow AI.
+
+    We store the facts rather than asking an LLM to infer support, volatility or
+    trend from a prose description.  The calculations deliberately stay simple
+    and are useful even when a plan later needs to be audited offline.
+    """
+    valid = [item for item in candles if item.get("close") is not None]
+    if not valid:
+        return {}
+    closes = [float(item["close"]) for item in valid]
+    recent_20 = valid[-20:]
+    highs = [float(item["high"]) for item in recent_20 if item.get("high") is not None]
+    lows = [float(item["low"]) for item in recent_20 if item.get("low") is not None]
+    sma_20 = _mean(closes[-20:]) if len(closes) >= 20 else None
+    sma_50 = _mean(closes[-50:]) if len(closes) >= 50 else None
+    true_ranges = []
+    atr_window = valid[-15:]
+    for index, item in enumerate(atr_window):
+        high = item.get("high")
+        low = item.get("low")
+        if high is None or low is None:
+            continue
+        high = float(high)
+        low = float(low)
+        if index == 0:
+            true_ranges.append(high - low)
+            continue
+        previous = atr_window[index - 1].get("close")
+        if previous is None:
+            true_ranges.append(high - low)
+            continue
+        previous = float(previous)
+        true_ranges.append(max(high - low, abs(high - previous), abs(low - previous)))
+    atr_14 = _mean(true_ranges[-14:]) if len(true_ranges) >= 14 else None
+    last_close = closes[-1]
+    if sma_20 is not None and sma_50 is not None and last_close > sma_20 > sma_50:
+        trend = "bullish"
+    elif sma_20 is not None and sma_50 is not None and last_close < sma_20 < sma_50:
+        trend = "bearish"
+    else:
+        trend = "mixed_or_insufficient"
+    return {
+        "last_close": last_close,
+        "recent_high_20": max(highs) if highs else None,
+        "recent_low_20": min(lows) if lows else None,
+        "sma_20": sma_20,
+        "sma_50": sma_50,
+        "atr_14": atr_14,
+        "trend": trend,
+        "source": "OKX public OHLC deterministic calculation",
+    }
+
+
 def _live_market_snapshot(symbol, analysis_timeframe):
     inst_id = _okx_inst_id(symbol)
     if not inst_id:
@@ -87,6 +146,7 @@ def _live_market_snapshot(symbol, analysis_timeframe):
                 "24_bars": _pct_change(closes, 24),
             },
             "recent_range_pct": range_pct,
+            "technical_context": _technical_context(valid),
             "candle_count": len(valid),
         }
     except Exception as exc:  # public data is optional; the plan remains recordable offline

@@ -19,7 +19,8 @@ logger = logging.getLogger("scheduler")
 
 class MacroScheduler:
     def __init__(self, data_pipeline, news_fetcher, report_builder, notifier,
-                 fast_news_fetcher=None, cpolar_checker=None, health_checker=None):
+                 fast_news_fetcher=None, cpolar_checker=None, health_checker=None,
+                 paper_trading_runner=None):
         self.timezone = app_timezone()
         self.scheduler = BackgroundScheduler(timezone=self.timezone)
         self.data_pipeline = data_pipeline
@@ -27,6 +28,7 @@ class MacroScheduler:
         self.fast_news_fetcher = fast_news_fetcher
         # cpolar_checker 保留为兼容旧调用；新版本统一使用 health_checker。
         self.health_checker = health_checker or cpolar_checker
+        self.paper_trading_runner = paper_trading_runner
         self.report_builder = report_builder
         self.notifier = notifier
 
@@ -73,6 +75,25 @@ class MacroScheduler:
             # 健康检查不能反过来拖垮数据、新闻和日报任务。
             logger.error("system health check failed: %s", e)
 
+    def _run_paper_trading(self):
+        """Advance local AI shadow orders using public market data only."""
+        if not self.paper_trading_runner:
+            return
+        try:
+            with hold_task("paper_trading"):
+                result = run_with_retry("paper_trading", self.paper_trading_runner)
+            logger.info(
+                "AI paper trading check: status=%s checked=%s changed=%s errors=%s",
+                result.get("status") if isinstance(result, dict) else "ok",
+                result.get("checked") if isinstance(result, dict) else "?",
+                result.get("changed") if isinstance(result, dict) else "?",
+                len(result.get("errors") or []) if isinstance(result, dict) else 0,
+            )
+        except TaskBusyError:
+            logger.warning("AI paper trading skipped: another paper-trading task is running")
+        except Exception as e:
+            logger.error("AI paper trading check failed: %s", e)
+
     def _daily_report(self):
         logger.info("Scheduled: generating daily report at %s...", self._now())
         try:
@@ -101,6 +122,10 @@ class MacroScheduler:
 
     def start(self):
         self._recover_missed_tasks()
+        paper_enabled = (
+            self.paper_trading_runner
+            and os.getenv("AI_SHADOW_PAPER_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
         # Data: every 6 hours
         self.scheduler.add_job(self._fetch_data, CronTrigger(hour="*/6"))
         # News: every hour
@@ -140,6 +165,17 @@ class MacroScheduler:
                 id="system_health_check",
                 replace_existing=True,
             )
+        if paper_enabled:
+            try:
+                paper_minutes = max(1, int(os.getenv("AI_SHADOW_PAPER_INTERVAL_MINUTES", "1")))
+            except ValueError:
+                paper_minutes = 1
+            self.scheduler.add_job(
+                self._run_paper_trading,
+                IntervalTrigger(minutes=paper_minutes),
+                id="ai_shadow_paper_trading",
+                replace_existing=True,
+            )
         # Daily report: 8:00 AM
         self.scheduler.add_job(self._daily_report, CronTrigger(hour=8, minute=0))
         # Weekly report: Monday 9:00 AM
@@ -147,11 +183,12 @@ class MacroScheduler:
         self.scheduler.start()
         logger.info(
             "Scheduler started with timezone=%s current_time=%s; jobs: "
-            "data/6h, RSS/%sm, news/1h, system-health/%sm, daily/8am, weekly/Mon9am",
+            "data/6h, RSS/%sm, news/1h, system-health/%sm, AI-paper/%sm, daily/8am, weekly/Mon9am",
             timezone_name(),
             self._now(),
             os.getenv("NEWS_FAST_REFRESH_MINUTES", "15") if self.fast_news_fetcher else "off",
             os.getenv("CPOLAR_HEALTH_CHECK_MINUTES", "5") if self.health_checker else "off",
+            os.getenv("AI_SHADOW_PAPER_INTERVAL_MINUTES", "1") if paper_enabled else "off",
         )
 
     def _recover_missed_tasks(self):
