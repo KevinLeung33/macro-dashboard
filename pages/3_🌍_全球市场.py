@@ -5,7 +5,7 @@ import streamlit as st
 
 from config.series_definitions import AKSHARE_SERIES
 from db.repository import add_event, query_events, query_series
-from services.dashboard_overview import build_cross_asset_tape, render_quality_strip, render_snapshot_cards
+from services.dashboard_overview import build_cross_asset_tape, render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from services.market_data import query_market_series
 from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls, horizontal_bar
 from utils.indicators import latest_value
@@ -42,6 +42,7 @@ def _show(fig, note=""):
 
 
 def _summary():
+    render_horizon_guidance("global")
     render_snapshot_cards(build_cross_asset_tape(["china", "fx", "commodity"]), columns=4)
     pmi = _ak("CN_PMI")
     cpi = _ak("CN_CPI")

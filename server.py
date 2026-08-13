@@ -54,7 +54,7 @@ def main():
     from data.pipeline import fetch_all
     from db.schema import init_db
     from services.scheduler import MacroScheduler
-    from services.news_fetcher import fetch_all_news, fetch_rss
+    from services.news_fetcher import fetch_all_news, fetch_fast_rss
     from services.system_health import check_system_health
     from services.report_builder import build_report
     from services.notifier import notify
@@ -86,6 +86,13 @@ def main():
         logger.info(f"AI analyzed {analyzed} articles")
         return count
 
+    def fast_news_pipeline():
+        count = fetch_fast_rss()
+        from services.news_alerts import dispatch_flash_rule_alerts
+        flash_alerts = dispatch_flash_rule_alerts()
+        logger.info("Fast news flash alerts: %s", flash_alerts)
+        return count
+
     def build_scheduled_report(report_type):
         if report_type == "daily":
             _result, markdown, _context = save_ai_trend_report(session="ai_daily")
@@ -99,7 +106,7 @@ def main():
     scheduler = MacroScheduler(
         data_pipeline=lambda: fetch_all(include_global=True),
         news_fetcher=news_pipeline,
-        fast_news_fetcher=fetch_rss,
+        fast_news_fetcher=fast_news_pipeline,
         health_checker=check_system_health,
         paper_trading_runner=run_paper_trading,
         trade_execution_sync_runner=sync_okx_trade_execution,

@@ -7,6 +7,7 @@ import pandas as pd
 from db.repository import (
     query_analyzed_news, query_cluster_articles, query_cluster_research_links,
     query_news_clusters, query_news_feed_states, query_news_processing_summary, retry_failed_articles,
+    query_recent_newsflash,
 )
 from db.schema import get_db
 from services.ai_review import ai_review_statistics, refresh_ai_analysis_reviews
@@ -62,10 +63,33 @@ def t(title):
     except Exception:
         return title
 
-tab0, tab1, tab2, tab3 = st.tabs(["🧩 事件流", "🧠 AI 分析", "📈 AI复盘", "📰 原始文章"])
+tab0, tab1, tab2, tab3, tab4 = st.tabs(["⚡ 重要快讯", "🧩 事件流", "🧠 AI 分析", "📈 AI复盘", "📰 原始文章"])
 
-# ====== TAB 0: Event Clusters ======
+# ====== TAB 0: Fast newsflash lane ======
 with tab0:
+    st.caption("快讯用于抢先发现事件；重要快讯可能尚未完成多源确认，不直接等同于交易结论。")
+    flash_rows = query_recent_newsflash(limit=40, minutes=24 * 60)
+    if not flash_rows:
+        st.info("最近24小时暂无快讯，或 Odaily 快讯源尚未完成首次抓取。")
+    else:
+        important_terms = ("暂停提现", "暂停提币", "被盗", "黑客", "脱锚", "破产", "清算", "ETF获批", "hacked", "depeg", "bankrupt")
+        important = [
+            row for row in flash_rows
+            if any(term.lower() in f"{row['title']} {row['summary']}".lower() for term in important_terms)
+        ]
+        st.metric("24小时快讯", len(flash_rows), f"重要候选 {len(important)} 条")
+        for row in flash_rows[:20]:
+            text = f"{row['title']} {row['summary']}".lower()
+            is_important = any(term.lower() in text for term in important_terms)
+            icon = "🔴" if is_important else "⚪"
+            link = f"[打开原文]({row['url']})" if row["url"] else ""
+            st.markdown(f"**{icon} {row['source']} · {row['published_at'] or '—'}**")
+            st.write(row["title"])
+            st.caption(f"{row['summary'][:360] if row['summary'] else '暂无摘要'} · {link}")
+            st.divider()
+
+# ====== TAB 1: Event Clusters ======
+with tab1:
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
     with c1:
         st.caption("事件流按具体事实合并多篇报道；同主题但事实不同的新闻会保留为独立事件。")
@@ -143,8 +167,8 @@ with tab0:
                     )
             st.divider()
 
-# ====== TAB 1: AI Analysis ======
-with tab1:
+# ====== TAB 2: AI Analysis ======
+with tab2:
     f1, f2, f3 = st.columns(3)
     with f1:
         event_options = ["全部", "fed_policy", "inflation", "growth", "employment",
@@ -232,8 +256,8 @@ with tab1:
             </div>
             """, unsafe_allow_html=True)
 
-# ====== TAB 2: AI Review ======
-with tab2:
+# ====== TAB 3: AI Review ======
+with tab3:
     c1, c2 = st.columns([1, 3])
     with c1:
         if st.button("刷新 AI 复盘", use_container_width=True, disabled=not admin_access) and require_admin("刷新 AI 复盘"):
@@ -274,12 +298,12 @@ with tab2:
                 use_container_width=True, hide_index=True,
             )
 
-# ====== TAB 3: Raw Articles ======
-with tab3:
+# ====== TAB 4: Raw Articles ======
+with tab4:
     st.caption("原始文章（AI分析前），按时间倒序")
     with get_db() as raw_conn:
         raw_rows = raw_conn.execute(
-            """SELECT title, source, source_type, topic, published_at, url, is_analyzed,
+            """SELECT title, source, source_type, feed_kind, topic, published_at, url, is_analyzed,
                       processing_status, processing_error, processing_attempts
                FROM news_articles ORDER BY published_at DESC LIMIT 50"""
         ).fetchall()
@@ -296,7 +320,8 @@ with tab3:
             badge = status_icon.get(r["processing_status"], "⚪")
             tt = f"`{r['topic']}`" if r["topic"] else ""
             link = f"[🔗]({r['url']})" if r["url"] else ""
-            st.caption(f"{badge} {tt} **{t(r['title'][:100])}** _{r['source_type']}/{r['source']}_ {r['published_at'] or ''} {link}")
+            kind_label = {"newsflash": "快讯", "article": "文章", "official_release": "官方公告", "official_data": "官方数据"}.get(r["feed_kind"], "综合")
+            st.caption(f"{badge} `{kind_label}` {tt} **{t(r['title'][:100])}** _{r['source_type']}/{r['source']}_ {r['published_at'] or ''} {link}")
 
 # Sidebar stats
 with st.sidebar:

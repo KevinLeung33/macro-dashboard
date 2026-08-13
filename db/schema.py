@@ -33,6 +33,11 @@ _COMPATIBLE_COLUMNS = {
         "processing_updated_at": "TIMESTAMP",
         "canonical_url": "TEXT DEFAULT ''",
         "title_fingerprint": "TEXT DEFAULT ''",
+        "feed_kind": "TEXT DEFAULT 'general'",
+        "triage_status": "TEXT DEFAULT 'pending'",
+        "triage_score": "REAL DEFAULT 0",
+        "detail_fetched_at": "TIMESTAMP",
+        "flash_alerted": "INTEGER DEFAULT 0",
     },
     "ai_analyses": {
         "prompt_version": "TEXT DEFAULT ''",
@@ -381,9 +386,14 @@ def init_db():
                 processing_error TEXT DEFAULT '',
                 processing_attempts INTEGER DEFAULT 0,
                 processing_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                raw_json TEXT DEFAULT '',
-                canonical_url TEXT DEFAULT '',
-                title_fingerprint TEXT DEFAULT ''
+                  raw_json TEXT DEFAULT '',
+                  canonical_url TEXT DEFAULT '',
+                  title_fingerprint TEXT DEFAULT '',
+                  feed_kind TEXT DEFAULT 'general',
+                  triage_status TEXT DEFAULT 'pending',
+                  triage_score REAL DEFAULT 0,
+                  detail_fetched_at TIMESTAMP,
+                  flash_alerted INTEGER DEFAULT 0
             );
 
             -- AI analysis results
@@ -895,6 +905,11 @@ def init_db():
         _ensure_column(conn, "news_articles", "processing_updated_at")
         _ensure_column(conn, "news_articles", "canonical_url")
         _ensure_column(conn, "news_articles", "title_fingerprint")
+        _ensure_column(conn, "news_articles", "feed_kind")
+        _ensure_column(conn, "news_articles", "triage_status")
+        _ensure_column(conn, "news_articles", "triage_score")
+        _ensure_column(conn, "news_articles", "detail_fetched_at")
+        _ensure_column(conn, "news_articles", "flash_alerted")
         _ensure_column(conn, "ai_analyses", "prompt_version")
         _ensure_column(conn, "news_clusters", "merged_into")
         _ensure_column(conn, "news_clusters", "ai_status")

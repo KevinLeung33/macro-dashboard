@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 from db.repository import query_series, query_series_snapshot
-from services.dashboard_overview import render_quality_strip, render_snapshot_cards
+from services.dashboard_overview import render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from utils.chart_utils import line_chart, multi_line_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.indicators import latest_value, scale_series, yoy_series, mom_annualized_series
 from utils.navigation import apply_target_window, go_to_research, render_research_target
@@ -26,6 +26,7 @@ def _show(fig, note=""):
 
 
 def _summary():
+    render_horizon_guidance("monetary")
     rows = []
     for sid, label, unit in (
         ("FEDFUNDS", "Fed利率", "%"), ("DGS10", "10Y收益率", "%"),

@@ -1,7 +1,7 @@
 import streamlit as st
 
 from db.repository import query_series
-from services.dashboard_overview import build_cross_asset_tape, render_quality_strip, render_snapshot_cards
+from services.dashboard_overview import build_cross_asset_tape, render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from services.market_data import query_market_series
 from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.event_overlays import add_event_markers, get_chart_events
@@ -32,6 +32,7 @@ def _show(fig, note=""):
 
 
 def _summary():
+    render_horizon_guidance("crypto")
     render_snapshot_cards(build_cross_asset_tape(["crypto", "rates", "fx", "risk"]), columns=4)
     btc, _ = _market("BTC-USD")
     funding = _q("crypto_market", "BTC_FUNDING_RATE")

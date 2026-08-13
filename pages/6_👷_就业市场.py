@@ -1,7 +1,7 @@
 import streamlit as st
 
 from db.repository import query_series
-from services.dashboard_overview import render_quality_strip, render_snapshot_cards
+from services.dashboard_overview import render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from utils.chart_utils import line_chart, multi_line_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.indicators import latest_value, yoy_series
 from utils.navigation import apply_target_window, go_to_research, render_research_target
@@ -19,6 +19,7 @@ def _show(fig, note=""):
 
 
 def _summary():
+    render_horizon_guidance("employment")
     rows = []
     for sid, label, unit in (("UNRATE", "失业率", "%"), ("PAYEMS", "非农就业", "千人"), ("JTSJOL", "职位空缺", "千人"), ("ICSA", "初请", "人"), ("AHETPI", "平均时薪", "$")):
         df = _q(sid)

@@ -1,7 +1,7 @@
 import streamlit as st
 
 from db.repository import query_series
-from services.dashboard_overview import render_quality_strip, render_snapshot_cards
+from services.dashboard_overview import render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.indicators import latest_value
 from utils.navigation import apply_target_window, go_to_research, render_research_target
@@ -19,6 +19,7 @@ def _show(fig, note=""):
 
 
 def _summary():
+    render_horizon_guidance("liquidity")
     rows = []
     for sid, label, unit in (("WALCL", "Fed总资产", "百万$"), ("RRPONTSYD", "RRP", "十亿$"), ("WRESBAL", "银行准备金", "十亿$"), ("WTREGEN", "TGA", "十亿$"), ("SOFR", "SOFR", "%"), ("NFCI", "NFCI", "")):
         df = _q(sid)

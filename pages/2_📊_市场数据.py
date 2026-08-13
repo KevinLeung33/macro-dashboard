@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 from db.repository import query_series
-from services.dashboard_overview import build_cross_asset_tape, render_quality_strip, render_snapshot_cards
+from services.dashboard_overview import build_cross_asset_tape, render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from services.market_data import query_market_series
 from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.event_overlays import add_event_markers, get_chart_events
@@ -32,6 +32,7 @@ def _show(fig, note=""):
 
 
 def _summary():
+    render_horizon_guidance("market")
     render_snapshot_cards(build_cross_asset_tape(["risk", "rates", "fx", "commodity"]), columns=4)
     render_quality_strip(["fred", "yfinance"], title="市场数据质量")
     st.info("优先观察：股债是否同向、美元是否走强、VIX 是否确认风险偏好变化。详细数据中再核对各自历史结构。")

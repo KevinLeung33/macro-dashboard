@@ -162,7 +162,7 @@ class MacroScheduler:
         # RSS: every 15 minutes by default; this job only入库，不调用 AI。
         if self.fast_news_fetcher:
             try:
-                fast_minutes = max(5, int(os.getenv("NEWS_FAST_REFRESH_MINUTES", "15")))
+                fast_minutes = max(5, int(os.getenv("NEWS_FAST_REFRESH_MINUTES", "10")))
             except ValueError:
                 fast_minutes = 15
             self.scheduler.add_job(
@@ -226,7 +226,7 @@ class MacroScheduler:
             "data/6h, RSS/%sm, news/1h, system-health/%sm, AI-paper/%sm, OKX-execution/%sm, daily/8am, weekly/Mon9am",
             timezone_name(),
             self._now(),
-            os.getenv("NEWS_FAST_REFRESH_MINUTES", "15") if self.fast_news_fetcher else "off",
+            os.getenv("NEWS_FAST_REFRESH_MINUTES", "10") if self.fast_news_fetcher else "off",
             os.getenv("CPOLAR_HEALTH_CHECK_MINUTES", "5") if self.health_checker else "off",
             os.getenv("AI_SHADOW_PAPER_INTERVAL_MINUTES", "1") if paper_enabled else "off",
             os.getenv("OKX_READONLY_SYNC_INTERVAL_MINUTES", "1") if execution_sync_enabled else "off",

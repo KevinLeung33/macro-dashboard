@@ -1,7 +1,7 @@
 import streamlit as st
 
 from db.repository import query_series
-from services.dashboard_overview import build_cross_asset_tape, render_quality_strip, render_snapshot_cards
+from services.dashboard_overview import build_cross_asset_tape, render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from utils.chart_utils import line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.event_overlays import add_event_markers, get_chart_events
 from utils.indicators import latest_value
@@ -20,6 +20,7 @@ def _show(fig, note=""):
 
 
 def _summary():
+    render_horizon_guidance("credit")
     render_snapshot_cards(build_cross_asset_tape(["risk", "rates", "credit"]), columns=4)
     hy = _q("BAMLH0A0HYM2"); nfci = _q("NFCI"); vix = _q("VIXCLS")
     hy_v, nfci_v, vix_v = latest_value(hy), latest_value(nfci), latest_value(vix)

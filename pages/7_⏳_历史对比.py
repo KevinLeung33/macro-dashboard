@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from db.repository import query_series
-from services.dashboard_overview import render_quality_strip, render_snapshot_cards
+from services.dashboard_overview import render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from utils.chart_utils import line_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.indicators import latest_value, yoy_series
 from utils.navigation import go_to_research
@@ -20,6 +20,7 @@ def _show(fig, note=""):
 
 
 def _summary():
+    render_horizon_guidance("history")
     rows = []
     for sid, label, unit in (("SP500", "标普500", "点"), ("UNRATE", "失业率", "%"), ("T10Y3M", "10Y-3M利差", "%")):
         df = _q(sid)

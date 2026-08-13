@@ -38,6 +38,13 @@ RSS_FEEDS = {
     "Wu Blockchain": "https://www.wublock123.com/feed",
 }
 
+# Odaily 官方 RSS：文章源适合进入新闻聚类和 AI 摘要队列；保留环境变量
+# 开关，便于源站限流或噪声过大时无需改代码即可停用。
+if os.getenv("ODAILY_RSS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
+    RSS_FEEDS["Odaily"] = "https://rss.odaily.news/rss/post"
+if os.getenv("ODAILY_NEWSFLASH_RSS_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}:
+    RSS_FEEDS["Odaily Newsflash"] = "https://rss.odaily.news/rss/newsflash"
+
 # 财新没有在本机可直连的官方 RSS；只允许显式启用已经实测通过的
 # 第三方镜像。它是补充媒体源，绝不作为宏观数据或告警的基础依赖。
 _caixin_rss_mirror = os.getenv("CAIXIN_RSS_MIRROR_URL", "").strip()
@@ -54,6 +61,8 @@ RSS_SOURCE_PRIORITY = {
     "ECB Press Releases": 0,
     "ECB Statistical Releases": 0,
     "Wu Blockchain": 1,
+    "Odaily": 1,
+    "Odaily Newsflash": 1,
     "CNBC Top": 2,
     "MarketWatch": 2,
     "Caixin (RSS mirror)": 2,
@@ -66,7 +75,32 @@ RSS_SOURCE_PRIORITY = {
 # the dashboard and database; the health monitor only pages on core releases.
 RSS_OPTIONAL_SOURCES = {
     "CNBC Top", "MarketWatch", "Caixin (RSS mirror)",
-    "CoinDesk", "Cointelegraph", "Wu Blockchain",
+    "CoinDesk", "Cointelegraph", "Wu Blockchain", "Odaily", "Odaily Newsflash",
+}
+
+RSS_FEED_KINDS = {
+    "Federal Reserve": "official_release",
+    "SEC Press Releases": "official_release",
+    "EIA Today in Energy": "general",
+    "EIA Press Releases": "official_release",
+    "国家统计局·数据发布": "official_data",
+    "国家统计局·数据解读": "official_release",
+    "ECB Press Releases": "official_release",
+    "ECB Statistical Releases": "official_data",
+    "CNBC Top": "general",
+    "MarketWatch": "general",
+    "CoinDesk": "general",
+    "Cointelegraph": "general",
+    "Wu Blockchain": "general",
+    "Odaily": "article",
+    "Odaily Newsflash": "newsflash",
+    "Caixin (RSS mirror)": "article",
+}
+
+# 快速任务优先抓取快讯和官方公告；普通文章仍由每小时完整任务抓取。
+RSS_FAST_SOURCE_NAMES = {
+    source for source, kind in RSS_FEED_KINDS.items()
+    if kind in {"newsflash", "official_release", "official_data"}
 }
 
 
@@ -165,8 +199,7 @@ def fetch_rss(feeds=None):
                 summary = entry.get("summary", "")
                 link = entry.get("link", "")
                 topic = _classify_topic(title, summary)
-                if topic == "other":
-                    continue
+                feed_kind = RSS_FEED_KINDS.get(source_name, "general")
 
                 pub = entry.get("published_parsed") or entry.get("updated_parsed")
                 pub_str = (
@@ -177,7 +210,18 @@ def fetch_rss(feeds=None):
                 rid = insert_news_article(
                     source=source_name, source_type="rss", url=link,
                     title=title, summary=summary[:500],
-                    published_at=pub_str, topic=topic,
+                    published_at=pub_str, topic=topic, feed_kind=feed_kind,
+                    raw_json=str({
+                        "feed_kind": feed_kind,
+                        "title": title,
+                        "summary": summary,
+                        "link": link,
+                        "published": entry.get("published", ""),
+                        "updated": entry.get("updated", ""),
+                        "id": entry.get("id", ""),
+                        "author": entry.get("author", ""),
+                        "tags": entry.get("tags", []),
+                    }),
                 )
                 if rid:
                     added += 1
@@ -195,6 +239,12 @@ def fetch_rss(feeds=None):
             logger.warning(f"RSS {source_name}: {e}")
 
     return added
+
+
+def fetch_fast_rss():
+    """低延迟通道：快讯和官方发布；不调用 AI。"""
+    feeds = {name: url for name, url in RSS_FEEDS.items() if name in RSS_FAST_SOURCE_NAMES}
+    return fetch_rss(feeds)
 
 
 def fetch_alpha_vantage(api_key=None):

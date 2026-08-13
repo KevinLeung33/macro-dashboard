@@ -748,7 +748,7 @@ def add_event(date, title, description="", category="market", impact="medium"):
 # ====== News tables ======
 
 def insert_news_article(source, source_type, url, title, summary="", content="",
-                         published_at="", topic=""):
+                         published_at="", topic="", feed_kind="general", raw_json=""):
     title = str(title or "").strip()
     if not title:
         return None
@@ -771,11 +771,11 @@ def insert_news_article(source, source_type, url, title, summary="", content="",
             cur = conn.execute(
                 """INSERT OR IGNORE INTO news_articles
                    (source, source_type, url, title, summary, content, published_at, topic,
-                    hash, canonical_url, title_fingerprint)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    hash, canonical_url, title_fingerprint, feed_kind, raw_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     source, source_type, url, title, summary, content, published_at, topic,
-                    h, canonical_url, fingerprint,
+                    h, canonical_url, fingerprint, feed_kind or "general", raw_json or "",
                 ),
             )
             # INSERT OR IGNORE 时 last_insert_rowid() 可能返回上一条文章的 ID，
@@ -848,13 +848,39 @@ def query_news_feed_states():
         ).fetchall()
 
 
+def query_recent_newsflash(limit=20, minutes=180):
+    """Recent raw fast-news items for the radar and rule-based early alerts."""
+    with get_db() as conn:
+        return conn.execute(
+            """SELECT id, source, title, summary, url, published_at, topic,
+                      feed_kind, triage_status, triage_score, flash_alerted
+               FROM news_articles
+               WHERE feed_kind = 'newsflash'
+                 AND COALESCE(published_at, fetched_at) >= datetime('now', ?)
+               ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT ?""",
+            (f"-{max(1, int(minutes))} minutes", max(1, int(limit))),
+        ).fetchall()
+
+
+def claim_newsflash_alert(article_id):
+    with get_db() as conn:
+        cur = conn.execute(
+            """UPDATE news_articles SET flash_alerted = 1,
+                      processing_updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND COALESCE(flash_alerted, 0) = 0""",
+            (article_id,),
+        )
+        return cur.rowcount == 1
+
+
 def get_unanalyzed_articles(limit=20):
     with get_db() as conn:
         rows = conn.execute(
             """SELECT id, title, summary, source, source_type, url, published_at,
-                      title_fingerprint
+                      title_fingerprint, feed_kind, triage_status, triage_score
                FROM news_articles """
             "WHERE is_analyzed = 0 AND processing_status = 'fetched' "
+            "AND COALESCE(topic, '') <> 'other' "
             "ORDER BY published_at DESC LIMIT ?",
             (limit,),
         ).fetchall()

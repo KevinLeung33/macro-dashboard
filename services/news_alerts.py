@@ -11,6 +11,8 @@ from db.repository import (
     query_cluster_articles,
     query_news_clusters,
     set_runtime_setting,
+    claim_newsflash_alert,
+    query_recent_newsflash,
 )
 from services.runtime_controls import parse_notify_channels
 from services.time_utils import app_now, app_timezone
@@ -179,5 +181,51 @@ def dispatch_urgent_news_alerts(limit=20):
         except Exception as exc:
             logger.warning("Urgent news alert failed for cluster=%s: %s", cluster["id"], exc)
             finish_news_cluster_alert(cluster["id"], sent=False, error_message=exc)
+            failed += 1
+    return {"sent": sent, "skipped": skipped, "failed": failed}
+
+
+FLASH_ALERT_KEYWORDS = (
+    "暂停提现", "暂停提币", "停止提现", "停止提币", "被盗", "黑客攻击",
+    "安全事件", "稳定币脱锚", "脱锚", "破产", "清算", "ETF获批", "现货ETF",
+    "withdrawal suspended", "hacked", "exploit", "depeg", "bankrupt",
+)
+
+
+def dispatch_flash_rule_alerts(limit=10):
+    """Send conservative early alerts before the hourly AI/event pipeline.
+
+    This is deliberately a discovery alert, not a trading conclusion. Only
+    strict high-impact phrases are allowed; the article remains pending for
+    normal AI analysis and cross-source confirmation.
+    """
+    if not _enabled():
+        return {"sent": 0, "skipped": 0, "failed": 0, "reason": "disabled"}
+    config = get_news_alert_config()
+    terms = tuple(item.lower() for item in FLASH_ALERT_KEYWORDS)
+    sent = skipped = failed = 0
+    for row in query_recent_newsflash(limit=limit, minutes=180):
+        text = f"{row['title']} {row['summary']}".lower()
+        matched = next((term for term in terms if term in text), None)
+        if not matched or not claim_newsflash_alert(row["id"]):
+            skipped += 1
+            continue
+        message = (
+            "**Crypto重要快讯（待确认）**\n"
+            f"**来源：** {row['source']}\n"
+            f"**标题：** {row['title']}\n"
+            f"**触发：** `{matched}`\n"
+            "**说明：** 这是快速事件发现提醒，尚未完成多源交叉验证和完整AI分析。\n"
+            f"**原文：** {row['url'] or '请打开新闻雷达查看'}"
+        )
+        try:
+            from services.notifier import notify
+            results = notify(message, config["channels"], title="Crypto重要快讯", level="warning")
+            if any(results.values()):
+                sent += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            logger.warning("Flash rule alert failed for article=%s: %s", row["id"], exc)
             failed += 1
     return {"sent": sent, "skipped": skipped, "failed": failed}

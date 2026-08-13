@@ -7,6 +7,7 @@ import streamlit as st
 from db.repository import (
     add_event,
     query_news_clusters,
+    query_recent_newsflash,
     query_daily_reports,
     query_research_context,
     query_trade_notes,
@@ -19,6 +20,7 @@ from services.dashboard_cockpit import build_cockpit
 from services.dashboard_overview import (
     build_cross_asset_tape,
     render_event_calendar,
+    render_horizon_guidance,
     render_quality_strip,
     render_snapshot_cards,
 )
@@ -94,6 +96,16 @@ for tab, (title, groups) in zip(tape_tabs, tape_groups.items()):
 
 # ===== 2. 数据质量前置 =====
 render_quality_strip(title="当前摘要使用的数据质量")
+
+st.subheader("🧭 宏观文字总结")
+render_horizon_guidance("home", brief=brief, title="先读结论，再决定要核对哪些详细数据")
+
+flash_preview = query_recent_newsflash(limit=5, minutes=24 * 60)
+if flash_preview:
+    st.subheader("⚡ 最近快讯")
+    st.caption("快讯用于发现事件；重要事件仍需等待多源确认和完整分析。")
+    for item in flash_preview[:3]:
+        st.caption(f"{item['source']} · {item['published_at'] or '—'} · {item['title']}")
 
 # ===== 3. 变化与催化剂 =====
 st.subheader("⚡ 变化与催化剂")
