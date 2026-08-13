@@ -42,6 +42,11 @@ _COMPATIBLE_COLUMNS = {
     "ai_analyses": {
         "prompt_version": "TEXT DEFAULT ''",
     },
+    "trade_ai_reviews": {
+        "review_mode": "TEXT DEFAULT 'holding_check'",
+        "review_cutoff_at": "TEXT DEFAULT ''",
+        "evidence_json": "TEXT DEFAULT '{}'",
+    },
     "news_clusters": {
         "merged_into": "INTEGER",
         "ai_status": "TEXT DEFAULT 'pending'",
@@ -654,6 +659,9 @@ def init_db():
                 weaknesses TEXT DEFAULT '',
                 risk_flags TEXT DEFAULT '',
                 execution_review TEXT DEFAULT '',
+                review_mode TEXT DEFAULT 'holding_check',
+                review_cutoff_at TEXT DEFAULT '',
+                evidence_json TEXT DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (note_id) REFERENCES trade_notes(id)
             );
@@ -911,6 +919,9 @@ def init_db():
         _ensure_column(conn, "news_articles", "detail_fetched_at")
         _ensure_column(conn, "news_articles", "flash_alerted")
         _ensure_column(conn, "ai_analyses", "prompt_version")
+        _ensure_column(conn, "trade_ai_reviews", "review_mode")
+        _ensure_column(conn, "trade_ai_reviews", "review_cutoff_at")
+        _ensure_column(conn, "trade_ai_reviews", "evidence_json")
         _ensure_column(conn, "news_clusters", "merged_into")
         _ensure_column(conn, "news_clusters", "ai_status")
         _ensure_column(conn, "news_clusters", "ai_title")

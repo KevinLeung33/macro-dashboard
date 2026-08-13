@@ -938,6 +938,7 @@ else:
     reviews = query_trade_ai_reviews(note_id=selected_id, limit=10)
     latest_review = reviews[0] if reviews else None
     latest_review_payload = _json_object(latest_review["review_json"]) if latest_review else {}
+    is_closed_trade = str(execution.get("state") or "").startswith("closed_")
 
     alignment_map = {
         "supportive": "支持", "neutral": "中性", "headwind": "存在逆风",
@@ -972,7 +973,8 @@ else:
         feedback_caption = "尚无环境反馈"
     if latest_review:
         review_summary = verdict_map.get(latest_review_payload.get("verdict"), "数据不足")
-        review_caption = f"共 {len(reviews)} 条 · 最近 {str(latest_review['created_at'])[:16]}"
+        review_mode_label = "结束复盘" if latest_review["review_mode"] == "closed_trade" else "持仓检查"
+        review_caption = f"{review_mode_label} · 共 {len(reviews)} 条 · 最近 {str(latest_review['created_at'])[:16]}"
     else:
         review_summary = "未生成"
         review_caption = "尚无 AI 点评"
@@ -1181,8 +1183,12 @@ else:
         f"🧠 AI 点评历史 · {review_summary} · {review_caption}",
         expanded=expand_review_once,
     ):
-        st.caption("点评会对照原计划、环境反馈、实际只读订单/成交和当前 K 线摘要；不会执行任何交易。")
-        if st.button("🧠 生成 AI 交易点评", type="primary", disabled=not admin_access, key=f"trade_ai_review_{selected_id}"):
+        if is_closed_trade:
+            st.caption("交易已结束：正式复盘只使用计划创建至最后退出成交之间的订单、成交、K线和环境证据，自动排除之后的数据。")
+        else:
+            st.caption("交易尚未结束：这里只能生成持仓中检查，不评价最终盈亏，也不会使用未来行情。")
+        review_button_label = "🧠 生成交易结束复盘" if is_closed_trade else "🧠 生成持仓中检查"
+        if st.button(review_button_label, type="primary", disabled=not admin_access, key=f"trade_ai_review_{selected_id}"):
             if require_admin("生成 AI 交易点评"):
                 with st.spinner("AI 正在复盘这笔已记录交易……"):
                     try:
@@ -1199,18 +1205,24 @@ else:
                             if not order_id or order_id in seen_order_ids:
                                 continue
                             seen_order_ids.add(order_id)
-                            context_orders.extend(query_trade_orders(
+                            context_orders.extend(dict(row) for row in query_trade_orders(
                                 venue=linked.get("venue") or selected["venue"],
                                 account_label=linked.get("account_label") or account_label,
                                 order_id=order_id,
                                 limit=1,
                             ))
-                            context_fills.extend(query_trade_fills(
+                            context_fills.extend(dict(row) for row in query_trade_fills(
                                 venue=linked.get("venue") or selected["venue"],
                                 account_label=linked.get("account_label") or account_label,
                                 order_id=order_id,
                                 limit=200,
                             ))
+                        role_by_order_id = {
+                            str(item.get("order_id") or ""): str(item.get("role") or "")
+                            for item in execution_links
+                        }
+                        for fill in context_fills:
+                            fill["role"] = role_by_order_id.get(str(fill.get("order_id") or ""), "")
                         order_context = {
                             "orders": _row_dicts(context_orders),
                             "fills": _row_dicts(context_fills),
@@ -1222,10 +1234,17 @@ else:
                                 )
                             },
                         }
+                        if is_closed_trade:
+                            exit_times = [
+                                str(fill.get("executed_at") or "") for fill in context_fills
+                                if str(fill.get("role") or "") != "entry" and fill.get("executed_at")
+                            ]
+                            order_context["review_cutoff_at"] = max(exit_times) if exit_times else ""
                         review_trade_note(
                             selected_id,
                             order_context=order_context,
-                            market_context=st.session_state.get("okx_market_context", {}),
+                            market_context={} if is_closed_trade else st.session_state.get("okx_market_context", {}),
+                            review_mode="closed_trade" if is_closed_trade else "holding_check",
                         )
                         st.session_state[f"expand_ai_review_{selected_id}"] = True
                         st.success("点评已保存。")
@@ -1240,6 +1259,10 @@ else:
                 "点评结论",
                 verdict_map.get(latest_review_payload.get("verdict"), "数据不足"),
                 f"置信度 {latest_review_payload.get('confidence', 0.0):.0%}",
+            )
+            st.caption(
+                f"复盘模式：{'交易结束复盘' if latest_review['review_mode'] == 'closed_trade' else '持仓中检查'} · "
+                f"证据截止：{latest_review['review_cutoff_at'] or '当前检查时点'}"
             )
             st.write(latest_review_payload.get("summary_cn") or "暂无总结")
             for title, key in (("做得好的地方", "strengths"), ("需要改进", "weaknesses"), ("风险提示", "risk_flags"), ("下一次复盘问题", "post_trade_questions")):

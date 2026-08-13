@@ -2304,16 +2304,19 @@ def query_trade_fills(venue=None, account_label="", symbol=None, order_id=None, 
 
 def insert_trade_ai_review(note_id, order_id, model, prompt_version, status, review,
                            summary_cn="", strengths=None, weaknesses=None, risk_flags=None,
-                           execution_review=""):
+                           execution_review="", review_mode="holding_check",
+                           review_cutoff_at="", evidence=None):
     with get_db() as conn:
         cur = conn.execute(
             """INSERT INTO trade_ai_reviews
                (note_id, order_id, model, prompt_version, status, review_json, summary_cn,
-                strengths, weaknesses, risk_flags, execution_review)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                strengths, weaknesses, risk_flags, execution_review, review_mode,
+                review_cutoff_at, evidence_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (note_id, order_id or "", model or "", prompt_version or "", status or "completed",
              _json_text(review or {}), summary_cn or "", _json_text(strengths or []),
-             _json_text(weaknesses or []), _json_text(risk_flags or []), execution_review or ""),
+             _json_text(weaknesses or []), _json_text(risk_flags or []), execution_review or "",
+             review_mode or "holding_check", review_cutoff_at or "", _json_text(evidence or {})),
         )
         return cur.lastrowid
 
