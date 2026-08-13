@@ -137,7 +137,7 @@ def _historical_market_context(note, order_context, cutoff_at):
             symbol = f"{symbol[:-4]}-USDT-SWAP" if symbol.endswith("USDT") else symbol
         if not symbol.endswith(("-SWAP", "-FUTURES", "-SPOT")):
             symbol += "-SWAP"
-        timeframe = str(note.get("analysis_timeframe") or "1H")
+        timeframe = str(note["analysis_timeframe"] or "1H")
         if timeframe not in {"5m", "15m", "1H", "4H", "1D"}:
             timeframe = "1H"
         rows = OKXReadOnlyClient().fetch_candles(symbol, bar=timeframe, limit=300)
@@ -156,7 +156,7 @@ def _historical_market_context(note, order_context, cutoff_at):
             "candles": valid,
         }
     except Exception as exc:
-        logger.warning("Historical market context unavailable for trade %s: %s", note.get("id"), exc)
+        logger.warning("Historical market context unavailable for trade %s: %s", note["id"], exc)
         return {"cutoff_at": cutoff_at, "future_data_excluded": True, "error": str(exc)[:300]}
 
 
