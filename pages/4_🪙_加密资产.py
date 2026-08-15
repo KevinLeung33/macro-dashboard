@@ -4,6 +4,7 @@ from db.repository import query_series
 from services.dashboard_overview import build_cross_asset_tape, render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from services.market_data import query_market_series
 from services.btc_indicator_service import indicator_snapshots
+from config.btc_onchain_indicators import BTC_INDEX_SOURCE
 from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.event_overlays import add_event_markers, get_chart_events
 from utils.indicators import latest_value
@@ -133,6 +134,8 @@ def _details():
         flows = {k: v for k, v in (("BTC ETF净流入", etf_flow), ("BTC交易所净流入", exchange_flow)) if not v.empty}
         _show(add_range_selector(multi_line_chart(flows, "Crypto 资金流", "流量")), "外部流量需要核对配置源和发布日期。")
 
+    _btc_indicator_charts()
+
     st.subheader("MSTR")
     mstr, meta = _market("MSTR")
     if not mstr.empty:
@@ -142,6 +145,54 @@ def _details():
         c2.metric("52周高点", f"${high:.2f}" if high else "—")
         c3.metric("距高点", f"{(px / high - 1) * 100:.0f}%" if px is not None and high else "—")
         st.caption(f"provider={meta.get('provider')}")
+
+
+def _btc_indicator_charts():
+    """Render daily Wu BTC indicators with reference levels in the detail tab."""
+    from config.btc_onchain_indicators import BTC_INDICATORS
+
+    st.subheader("BTC 日级环境指标走势图")
+    st.caption("这些指标用于周期和交易背景判断，不替代 OKX 的实时价格、K线和执行数据。")
+    groups = {
+        "周期估值": "cycle_valuation",
+        "持有者行为": "holder_behavior",
+        "流动性": "macro_liquidity",
+        "情绪": "sentiment",
+        "衍生品风险": "derivatives_risk",
+    }
+    rows = {row["series_id"]: row for row in indicator_snapshots()}
+    for title, category in groups.items():
+        definitions = [meta for meta in BTC_INDICATORS.values() if meta.get("category") == category]
+        available = []
+        for meta in definitions:
+            series_id = meta["series_id"]
+            frame = query_series(BTC_INDEX_SOURCE, series_id)
+            if frame.empty:
+                continue
+            frame = apply_target_window(frame, target)
+            if not frame.empty:
+                available.append((meta, frame, rows.get(series_id, {})))
+        if not available:
+            continue
+        with st.expander(f"{title} · {len(available)}项", expanded=title in {"周期估值", "衍生品风险"}):
+            for offset in range(0, len(available), 2):
+                cols = st.columns(2)
+                for col, (meta, frame, snapshot) in zip(cols, available[offset:offset + 2]):
+                    with col:
+                        fig = line_chart(frame, meta["display_name"], meta["unit"], color="#f7931a")
+                        for point, label in meta.get("thresholds") or []:
+                            fig.add_hline(
+                                y=float(point), line_dash="dash", line_color="#ef4444",
+                                annotation_text=f"{label} ({point:g})",
+                                annotation_position="top left",
+                            )
+                        _show(add_range_selector(fig), meta["description"])
+                        if snapshot.get("value") is not None:
+                            st.caption(
+                                f"当前 {snapshot['value']:.6g} · 历史分位 {snapshot['percentile']:.1f}% · "
+                                f"{snapshot['state']} · 数据日期 {snapshot['date']}"
+                            )
+                        st.caption("使用参考：" + meta["use_reference"])
 
 
 def _evidence():
