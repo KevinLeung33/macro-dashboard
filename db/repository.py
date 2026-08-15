@@ -718,6 +718,17 @@ def get_last_fetch_date(source, series_id):
     return row[0] if row and row[0] else None
 
 
+def get_last_success_fetch_at(source, series_id):
+    """Return the latest successful fetch timestamp for a source marker."""
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT MAX(created_at) FROM fetch_log
+               WHERE source = ? AND series_id = ? AND status = 'success'""",
+            (source, series_id),
+        ).fetchone()
+    return row[0] if row and row[0] else None
+
+
 def get_all_fred_series_ids():
     with get_db() as conn:
         rows = conn.execute(

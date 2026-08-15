@@ -3,6 +3,7 @@ import streamlit as st
 from db.repository import query_series
 from services.dashboard_overview import build_cross_asset_tape, render_horizon_guidance, render_quality_strip, render_snapshot_cards
 from services.market_data import query_market_series
+from services.btc_indicator_service import indicator_snapshots
 from utils.chart_utils import line_chart, multi_line_chart, dual_axis_chart, add_range_selector, plotly_config, render_chart_controls
 from utils.event_overlays import add_event_markers, get_chart_events
 from utils.indicators import latest_value
@@ -46,6 +47,43 @@ def _summary():
     else:
         st.warning("BTC 行情暂无可用数据。")
     render_quality_strip(["binance_spot", "crypto_market", "crypto_liquidity", "crypto_flows"], title="Crypto 摘要数据质量")
+    st.subheader("BTC 日级环境指标")
+    rows = indicator_snapshots()
+    available = [row for row in rows if row.get("value") is not None]
+    if not available:
+        st.info("Wu Blockchain BTC 日级指标尚未成功抓取。")
+    else:
+        groups = {
+            "周期估值": "cycle_valuation",
+            "持有者行为": "holder_behavior",
+            "流动性": "macro_liquidity",
+            "情绪": "sentiment",
+            "衍生品风险": "derivatives_risk",
+        }
+        for title, category in groups.items():
+            group = [row for row in available if row.get("category") == category]
+            if not group:
+                continue
+            st.markdown(f"**{title}**")
+            cols = st.columns(min(4, len(group)))
+            for col, row in zip(cols * ((len(group) + len(cols) - 1) // len(cols)), group):
+                with col:
+                    value = row["value"]
+                    shown = f"{value:,.4f}" if abs(value) < 100 else f"{value:,.2f}"
+                    st.metric(row["display_name"], shown, f"历史分位 {row['percentile']:.0f}%")
+                    st.caption(f"{row['state']} · {row['date']}")
+        with st.expander("查看指标使用说明、关键阈值和历史分位", expanded=False):
+            for row in available:
+                st.markdown(f"**{row['display_name']}** · 当前 {row['value']:.6g} · 历史分位 {row['percentile']:.1f}% · {row['state']}")
+                st.caption(row["description"])
+                st.caption("使用参考：" + row["use_reference"])
+                if row.get("thresholds"):
+                    threshold_text = "；".join(f"{point:g}：{label}" for point, label in row["thresholds"])
+                    st.caption("关键位置（经验参考，非交易信号）：" + threshold_text)
+                else:
+                    st.caption("关键位置：没有稳定通用的绝对阈值，优先观察历史分位和趋势。")
+            st.caption("历史分位按当前已保存的该指标历史样本计算；样本不足或数据源变更时，分位仅作参考。")
+    render_quality_strip(["wu_btc_index"], title="BTC 日级指标数据质量")
 
 
 def _details():

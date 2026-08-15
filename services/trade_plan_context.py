@@ -18,7 +18,7 @@ from services.okx_readonly import OKXReadOnlyClient
 from services.time_utils import app_now
 
 logger = logging.getLogger("trade_plan_context")
-SNAPSHOT_VERSION = "trade-plan-context-v2"
+SNAPSHOT_VERSION = "trade-plan-context-v3"
 
 
 def _asset_from_symbol(symbol):
@@ -258,6 +258,26 @@ def build_trade_plan_snapshot(plan):
         errors.append(f"数据新鲜度读取失败：{str(exc)[:240]}")
 
     try:
+        from services.btc_indicator_service import indicator_snapshots, btc_environment_summary
+        btc_rows = indicator_snapshots()
+        btc_environment = {
+            "summary": btc_environment_summary(btc_rows),
+            "indicators": [
+                {
+                    key: row.get(key)
+                    for key in (
+                        "series_id", "display_name", "value", "previous", "change_1d",
+                        "date", "percentile", "state", "use_reference", "thresholds",
+                    )
+                }
+                for row in btc_rows if row.get("value") is not None
+            ],
+        }
+    except Exception as exc:
+        btc_environment = {"summary": {}, "indicators": []}
+        errors.append(f"BTC日级环境指标读取失败：{str(exc)[:240]}")
+
+    try:
         news = [_compact_news(dict(row)) for row in query_analyzed_news(
             assets=related_assets, min_severity=2, limit=8, days=3,
         )]
@@ -299,6 +319,7 @@ def build_trade_plan_snapshot(plan):
             "asset_bias": _compact_bias(target_bias or crypto_proxy_bias),
             "asset_bias_is_crypto_proxy": target_bias is None and crypto_proxy_bias is not None,
             "recent_market_moves": market_moves,
+            "btc_daily_environment": btc_environment,
         },
         "news": {"articles": news, "important_clusters": clusters},
         "data_health": data_health,

@@ -92,6 +92,14 @@ DATA_SOURCES = {
         "incremental": True,
         "description": "Optional configured CSV/JSON adapters for BTC ETF and exchange netflow.",
     },
+    "wu_btc_index": {
+        "label": "Wu Blockchain BTC指标",
+        "enabled": True,
+        "priority": 77,
+        "refresh": "daily",
+        "incremental": True,
+        "description": "Wu Blockchain public proxy for daily BTC cycle, on-chain, sentiment and derivatives indicators; optional context only.",
+    },
     "news": {
         "label": "News",
         "enabled": True,

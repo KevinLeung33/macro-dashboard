@@ -54,6 +54,13 @@ def fetch_all(include_tic=True, include_crypto=True, include_global=True,
             fetch_and_store_crypto_market(incremental=incremental)
         except Exception as e:
             print(f"  Crypto derivatives/flows skipped: {e}")
+    if source_enabled("wu_btc_index", include_crypto):
+        print("Fetching daily BTC cycle/on-chain indicators (Wu Blockchain)...")
+        try:
+            from data.fetchers.wu_btc_index_fetcher import fetch_and_store_wu_btc_index
+            fetch_and_store_wu_btc_index(incremental=incremental)
+        except Exception as e:
+            print(f"  Wu BTC index skipped: {e}")
     if source_enabled("akshare", include_global):
         print("Fetching global (AKShare: China PMI/CPI/社融)...")
         try:
