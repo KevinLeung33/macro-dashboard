@@ -166,7 +166,7 @@ def _task_issues():
 def _data_issues():
     critical = []
     warnings = []
-    max_age = _env_float("HEALTH_DATA_SOURCE_MAX_AGE_SECONDS", 43200)
+    default_max_age = _env_float("HEALTH_DATA_SOURCE_MAX_AGE_SECONDS", 43200)
     # A source failure is not automatically a dashboard outage.  For example,
     # Stooq and Alpha Vantage are deliberately disabled fallbacks in the
     # default configuration, and crypto flows are optional until the user
@@ -198,6 +198,18 @@ def _data_issues():
             continue
         last_status = str(row.get("last_status") or "").lower()
         age_hours = row.get("age_hours")
+        # A single global 12-hour threshold creates false alarms for sources
+        # intentionally refreshed daily or monthly.  Keep the configurable
+        # hourly default, but derive a conservative source-specific window
+        # from the declared refresh frequency.
+        refresh = str(config.get("refresh") or "").lower()
+        refresh_max_age = {
+            "hourly": 12 * 3600,
+            "daily": 36 * 3600,
+            "weekly": 10 * 24 * 3600,
+            "monthly": 45 * 24 * 3600,
+        }.get(refresh, default_max_age)
+        max_age = max(default_max_age, refresh_max_age)
         try:
             has_fresh_data = age_hours is not None and float(age_hours) * 3600 <= max_age
         except (TypeError, ValueError):

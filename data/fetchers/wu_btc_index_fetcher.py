@@ -32,11 +32,21 @@ def _records(payload, meta):
         return []
     if isinstance(payload, list):
         raw_rows = payload
-        return [
-            {"date": _date_from_ms(row.get("timestamp")), "value": float(row.get("value"))}
-            for row in raw_rows
-            if isinstance(row, dict) and row.get("timestamp") is not None and row.get("value") is not None
-        ]
+        field = meta.get("value_field")
+        rows = []
+        for row in raw_rows:
+            if not isinstance(row, dict) or row.get("timestamp") is None:
+                continue
+            raw_value = row.get(field) if field else row.get("value")
+            # The M2 endpoint has changed its field name between releases.
+            if raw_value is None and meta.get("series_id") == "BTC_VS_M2":
+                raw_value = row.get("global_m2_yoy_growth", row.get("us_m2_yoy_growth"))
+            try:
+                if raw_value is not None:
+                    rows.append({"date": _date_from_ms(row["timestamp"]), "value": float(raw_value)})
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return list({row["date"]: row for row in rows}.values())
 
     times = payload.get("time_list") or []
     values = payload.get("data_list") or []
@@ -124,7 +134,15 @@ def fetch_and_store_wu_btc_index(incremental=True, force=False, request_delay=0.
             response = session.get(endpoint, timeout=25)
             response.raise_for_status()
             payload = response.json().get("data")
-            count = _store(meta["series_id"], _records(payload, meta), meta, endpoint)
+            records = _records(payload, meta)
+            if not records and meta.get("allow_empty"):
+                # Some advertised historical metrics are currently returned as
+                # JSON null by the public proxy.  This is an unavailable metric,
+                # not a failure of the whole Wu source.
+                log_fetch(BTC_INDEX_SOURCE, meta["series_id"], "skipped", error_message="endpoint returned no data")
+                results[meta["series_id"]] = 0
+                continue
+            count = _store(meta["series_id"], records, meta, endpoint)
             results[meta["series_id"]] = count
             log_fetch(BTC_INDEX_SOURCE, meta["series_id"], "success", count)
         except Exception as exc:

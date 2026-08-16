@@ -32,6 +32,7 @@ BTC_INDICATORS = {
         "thresholds": [(0.0, "低于零：历史上偏低估区域"), (3.0, "偏高估值观察区"), (7.0, "历史极端高估参考区")],
         "threshold_direction": "higher_is_risk",
         "value_field": None,
+        "allow_empty": True,
     },
     "coinglass/bitcoin-net-unrealized-profit-loss": {
         "series_id": "NUPL",
@@ -97,7 +98,7 @@ BTC_INDICATORS = {
         "use_reference": "用于判断宏观流动性是否支持BTC中长期趋势，不用于短线触发。",
         "thresholds": [],
         "threshold_direction": "trend_only",
-        "value_field": None,
+        "value_field": "global_m2_yoy_growth",
     },
     "coinglass/fear-greed-history": {
         "series_id": "FEAR_GREED",
