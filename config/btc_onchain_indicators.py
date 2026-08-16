@@ -55,6 +55,7 @@ BTC_INDICATORS = {
         "thresholds": [],
         "threshold_direction": "higher_is_risk",
         "value_field": None,
+        "allow_empty": True,
     },
     "coinglass/bitcoin-long-term-holder-supply": {
         "series_id": "LTH_SUPPLY",
@@ -121,6 +122,7 @@ BTC_INDICATORS = {
         "thresholds": [(1.0, "关键线：1以上为盈利转移，1以下为亏损转移")],
         "threshold_direction": "higher_is_risk",
         "value_field": None,
+        "allow_empty": True,
     },
     "glassnode/069_exchange-net-position-change": {
         "series_id": "EXCHANGE_NET_POSITION",
@@ -132,6 +134,7 @@ BTC_INDICATORS = {
         "thresholds": [(0.0, "零线：净流入/净流出分界")],
         "threshold_direction": "higher_is_risk",
         "value_field": None,
+        "allow_empty": True,
     },
     "glassnode/066_stablecoin-supply-ratio-ssr": {
         "series_id": "SSR",
@@ -143,6 +146,7 @@ BTC_INDICATORS = {
         "thresholds": [],
         "threshold_direction": "lower_is_better",
         "value_field": None,
+        "allow_empty": True,
     },
     "glassnode/090_futures-perpetual-funding-rate-all-v2": {
         "series_id": "FUNDING_RATE_ALL",
@@ -154,6 +158,7 @@ BTC_INDICATORS = {
         "thresholds": [(0.0, "零线：多空资金成本方向分界")],
         "threshold_direction": "higher_is_risk",
         "value_field": None,
+        "allow_empty": True,
     },
     "glassnode/087_implied-volatility-index": {
         "series_id": "IMPLIED_VOLATILITY",
@@ -165,6 +170,7 @@ BTC_INDICATORS = {
         "thresholds": [],
         "threshold_direction": "higher_is_risk",
         "value_field": None,
+        "allow_empty": True,
     },
 }
 
