@@ -217,6 +217,8 @@ class OKXRealtimeService:
 
 def read_realtime_status():
     """Read Redis status for diagnostics without requiring the WS service."""
+    if not _enabled():
+        return {"enabled": False, "redis": False, "status": "disabled"}
     url = os.getenv("REDIS_URL", "").strip()
     if not url:
         return {"enabled": False, "redis": False, "error": "REDIS_URL is not configured"}
@@ -228,3 +230,57 @@ def read_realtime_status():
         return json.loads(raw) if raw else {"enabled": True, "redis": True, "status": "no heartbeat"}
     except Exception as exc:
         return {"enabled": True, "redis": False, "error": str(exc)[:500]}
+
+
+def _read_cached(scope, channel, suffix):
+    url = os.getenv("REDIS_URL", "").strip()
+    if not url:
+        return None
+    try:
+        import redis
+
+        client = redis.Redis.from_url(url, decode_responses=True)
+        raw = client.get(f"okx:realtime:{scope}:{channel}:{suffix}")
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def read_realtime_positions(account_label="main"):
+    """Return fresh WS positions in the same shape as SQLite rows."""
+    cached = _read_cached("private", "positions", "positions")
+    if not cached:
+        return []
+    try:
+        from services.okx_readonly import _normalise_position
+
+        return [
+            _normalise_position(row, account_label)
+            for row in (cached.get("value", {}).get("data") or [])
+            if row.get("instId") and abs(float(row.get("pos") or 0)) > 0
+        ]
+    except (TypeError, ValueError, KeyError):
+        return []
+
+
+def read_realtime_orders(account_label="main"):
+    """Return fresh WS orders in the same shape as SQLite rows."""
+    cached = _read_cached("private", "orders", "orders")
+    if not cached:
+        return []
+    try:
+        from services.okx_readonly import _normalise_order
+
+        return [
+            _normalise_order(row, account_label)
+            for row in (cached.get("value", {}).get("data") or [])
+            if row.get("ordId")
+        ]
+    except (TypeError, ValueError, KeyError):
+        return []
+
+
+def read_realtime_ticker(inst_id):
+    """Return the latest public ticker message, if it is still cached."""
+    cached = _read_cached("public", "tickers", inst_id)
+    return (cached or {}).get("value", {}).get("data", [None])[0]

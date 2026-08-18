@@ -30,9 +30,10 @@ from services.access_control import render_admin_access, require_admin
 from services.ai_shadow_config import shadow_constraints
 from services.ai_shadow_plan import generate_ai_shadow_plan
 from services.paper_trading import cancel_pending_paper_order, run_paper_trading
-from services.runtime_controls import TaskBusyError, hold_task
+from services.runtime_controls import TaskBusyError, hold_task, run_with_retry
 from services.trade_review import review_trade_note
 from services.okx_readonly import OKXReadOnlyClient, sync_okx_readonly_account
+from services.okx_realtime import read_realtime_orders, read_realtime_positions, read_realtime_status
 from services.trade_plan_context import build_trade_plan_snapshot
 from services.trade_plan_feedback import generate_trade_plan_feedback
 from services.trade_execution import (
@@ -237,7 +238,10 @@ if sync_clicked and require_admin("同步 OKX 账户"):
     with st.spinner("读取 OKX 账户、持仓、订单和成交……"):
         try:
             with hold_task("okx_trade_sync"):
-                st.session_state["okx_sync_result"] = sync_okx_readonly_account(okx_client)
+                st.session_state["okx_sync_result"] = run_with_retry(
+                    "okx_trade_sync",
+                    lambda: sync_okx_readonly_account(okx_client),
+                )
             st.success("OKX 只读数据已同步。")
         except TaskBusyError:
             st.info("OKX 自动执行同步正在运行，请稍后再试。")
@@ -258,10 +262,34 @@ active_orders = query_trade_orders(
     statuses=OPEN_EXCHANGE_ORDER_STATUSES,
 )
 fills = query_trade_fills("OKX", account_label, limit=200)
+realtime_status = read_realtime_status()
+realtime_positions = read_realtime_positions(account_label)
+realtime_orders = read_realtime_orders(account_label)
+if realtime_positions:
+    positions = realtime_positions
+if realtime_orders:
+    orders = realtime_orders
+    active_orders = [
+        row for row in realtime_orders
+        if str(row.get("status") or "").lower() in OPEN_EXCHANGE_ORDER_STATUSES
+    ]
 paper_orders = query_paper_orders(limit=200)
 shadow_plans = query_ai_shadow_plans(limit=200)
 sync_result = st.session_state.get("okx_sync_result") or {}
 with mode_col:
+    if realtime_status.get("public") == "connected" or realtime_status.get("private") == "connected":
+        st.caption(
+            f"WebSocket：公共 {realtime_status.get('public', '—')} · "
+            f"私有 {realtime_status.get('private', '—')} · "
+            f"最新消息 {realtime_status.get('last_message_at', '—')}"
+        )
+    elif realtime_status.get("enabled"):
+        st.warning(
+            f"WebSocket 实时层暂不可用：{realtime_status.get('error') or realtime_status.get('last_error') or '等待消息'}；"
+            "当前使用 SQLite/REST 缓存。"
+        )
+    else:
+        st.caption("WebSocket 未启用；当前使用 SQLite/REST 缓存。")
     if snapshot:
         mode_text = snapshot["account_mode"] or "未记录"
         margin_text = snapshot["margin_mode"] or "cross"
