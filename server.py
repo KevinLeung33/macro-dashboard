@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import hmac
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 # Add project root to path
@@ -71,7 +72,30 @@ def main():
         hold_task,
         parse_notify_channels,
         run_with_retry,
+        record_task_status,
+        read_task_status,
     )
+
+    background_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="macro-bg")
+
+    def submit_background_task(task_name, callback):
+        """Queue a long-running operation and return without blocking HTTP."""
+        record_task_status(task_name, "queued")
+
+        def runner():
+            try:
+                with hold_task(task_name):
+                    return run_with_retry(task_name, callback)
+            except TaskBusyError:
+                record_task_status(task_name, "skipped", error="another task is already running")
+                logger.warning("Background task skipped: %s is already running", task_name)
+            except Exception as exc:
+                # run_with_retry already records the final failure and notifies;
+                # keep the worker exception from surfacing in the API thread.
+                logger.exception("Background task failed: %s", task_name)
+
+        background_executor.submit(runner)
+        return {"status": "queued", "task": task_name}
 
     # 先完成新表/旧库迁移，再启动 RSS 快速任务。
     init_db()
@@ -180,11 +204,17 @@ def main():
             incremental: bool = True,
             _token: None = Depends(api_guard("refresh")),
         ):
-            execute_locked(
+            return submit_background_task(
                 "data_refresh",
                 lambda: fetch_all(include_global=True, incremental=incremental),
-            )
-            return {"status": "ok", "incremental": incremental}
+            ) | {"incremental": incremental}
+
+        @app.get("/api/task/status")
+        def task_status(
+            task_name: str = "data_refresh",
+            _token: None = Depends(api_guard("status")),
+        ):
+            return {"task": task_name, "status": read_task_status().get(task_name, {})}
 
         @app.post("/api/context/daily")
         def create_daily_context(

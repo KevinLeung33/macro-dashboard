@@ -2,6 +2,7 @@
 import os
 from datetime import date
 
+import requests
 import streamlit as st
 
 from db.repository import (
@@ -14,7 +15,6 @@ from db.repository import (
     query_latest_dashboard_snapshot,
 )
 from db.schema import init_db
-from data.pipeline import fetch_all
 from services.access_control import render_admin_access, require_admin
 from services.dashboard_cockpit import build_cockpit
 from services.dashboard_overview import (
@@ -25,7 +25,7 @@ from services.dashboard_overview import (
     render_snapshot_cards,
 )
 from services.home_brief import build_home_brief
-from services.runtime_controls import TaskBusyError, hold_task, run_with_retry
+from services.runtime_controls import read_task_status
 from utils.navigation import go_to_research
 from utils.alerts import check_alerts
 
@@ -42,21 +42,30 @@ with refresh_col:
     if st.button("🔄 刷新数据", use_container_width=True, type="primary", disabled=not admin_access):
         if require_admin("刷新数据"):
             try:
-                with hold_task("data_refresh"):
-                    with st.spinner("拉取宏观、市场、新闻与 AI 分析……"):
-                        run_with_retry(
-                            "data_refresh",
-                            lambda: fetch_all(include_news=True, include_global=True),
-                        )
-                st.rerun()
-            except TaskBusyError:
-                st.warning("已有数据刷新任务正在运行，请稍后再试。")
+                api_base = os.getenv("DASHBOARD_API_URL", "http://127.0.0.1:8080").rstrip("/")
+                api_token = os.getenv("API_AUTH_TOKEN", "").strip()
+                if not api_token:
+                    st.error("未配置 API_AUTH_TOKEN，无法提交后台刷新任务。")
+                else:
+                    response = requests.post(
+                        f"{api_base}/api/data/refresh?incremental=true",
+                        headers={"Authorization": f"Bearer {api_token}"},
+                        timeout=5,
+                    )
+                    if response.status_code in (200, 202):
+                        st.success("刷新任务已提交，页面不会等待抓取完成。")
+                    else:
+                        st.error(f"后台刷新提交失败：HTTP {response.status_code} {response.text[:300]}")
             except Exception as exc:
-                st.error(f"刷新失败：{exc}")
+                st.error(f"后台刷新提交失败：{exc}")
 with status_col:
+    refresh_status = read_task_status().get("data_refresh", {})
+    refresh_label = refresh_status.get("status", "unknown")
+    refresh_at = refresh_status.get("updated_at")
     st.caption(
         f"数据入口：FRED / AKShare / Yahoo Finance / Binance / OKX只读 · "
-        f"新闻：{'已配置' if os.getenv('OPENAI_API_KEY') else '规则摘要'}"
+        f"新闻：{'已配置' if os.getenv('OPENAI_API_KEY') else '规则摘要'} · "
+        f"刷新任务：{refresh_label}"
     )
 
 
