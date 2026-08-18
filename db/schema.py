@@ -979,6 +979,18 @@ def init_db():
             "ON news_articles(processing_status, published_at)"
         )
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_feed_kind_recent "
+            "ON news_articles(feed_kind, published_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_flash_delivery "
+            "ON news_articles(feed_kind, flash_alerted, published_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_triage_recent "
+            "ON news_articles(triage_status, published_at DESC, id DESC)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_news_articles_identity "
             "ON news_articles(title_fingerprint, published_at)"
         )
@@ -989,6 +1001,10 @@ def init_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ai_article_latest "
             "ON ai_analyses(article_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_event_severity_recent "
+            "ON ai_analyses(event_type, severity DESC, created_at DESC, id DESC)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_news_clusters_rebuild "
@@ -1006,4 +1022,20 @@ def init_db():
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ts_quality "
             "ON time_series(source, quality_status, date)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fetch_log_series_latest "
+            "ON fetch_log(source, series_id, created_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_orders_account_status "
+            "ON trade_orders(venue, account_label, status, updated_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_fills_account_order "
+            "ON trade_fills(venue, account_label, order_id, executed_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_positions_account "
+            "ON trade_positions(venue, account_label, updated_at DESC, id DESC)"
         )
