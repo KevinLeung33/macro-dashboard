@@ -32,7 +32,7 @@ from services.ai_shadow_plan import generate_ai_shadow_plan
 from services.paper_trading import cancel_pending_paper_order, run_paper_trading
 from services.runtime_controls import TaskBusyError, hold_task, run_with_retry
 from services.trade_review import review_trade_note
-from services.okx_readonly import OKXReadOnlyClient, sync_okx_readonly_account
+from services.okx_readonly import OKXReadOnlyClient, okx_rest_cooldown_remaining, sync_okx_readonly_account
 from services.okx_realtime import read_realtime_orders, read_realtime_positions, read_realtime_status
 from services.trade_plan_context import build_trade_plan_snapshot
 from services.trade_plan_feedback import generate_trade_plan_feedback
@@ -235,18 +235,22 @@ sync_col, mode_col = st.columns([1, 3])
 with sync_col:
     sync_clicked = st.button("🔄 同步 OKX 账户", disabled=not admin_access, type="primary")
 if sync_clicked and require_admin("同步 OKX 账户"):
-    with st.spinner("读取 OKX 账户、持仓、订单和成交……"):
-        try:
-            with hold_task("okx_trade_sync"):
-                st.session_state["okx_sync_result"] = run_with_retry(
-                    "okx_trade_sync",
-                    lambda: sync_okx_readonly_account(okx_client),
-                )
-            st.success("OKX 只读数据已同步。")
-        except TaskBusyError:
-            st.info("OKX 自动执行同步正在运行，请稍后再试。")
-        except Exception as exc:
-            st.error(f"OKX 同步失败：{exc}")
+    cooldown = okx_rest_cooldown_remaining("okx_trade_sync")
+    if cooldown > 0:
+        st.info(f"OKX REST 同步冷却中，请约 {cooldown} 秒后再试；WebSocket 仍会继续接收实时数据。")
+    else:
+        with st.spinner("读取 OKX 账户、持仓、订单和成交……"):
+            try:
+                with hold_task("okx_trade_sync"):
+                    st.session_state["okx_sync_result"] = run_with_retry(
+                        "okx_trade_sync",
+                        lambda: sync_okx_readonly_account(okx_client),
+                    )
+                st.success("OKX 只读数据已同步。")
+            except TaskBusyError:
+                st.info("OKX 自动执行同步正在运行，请稍后再试。")
+            except Exception as exc:
+                st.error(f"OKX 同步失败：{exc}")
 
 if not okx_client.configured:
     st.warning("尚未配置 OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE；可以先使用本页的交易记录功能。")

@@ -32,8 +32,8 @@ class OKXReadOnlyError(RuntimeError):
     """Raised when an OKX read-only request or response cannot be used."""
 
 
-def _enforce_rest_interval(task_name="okx_trade_sync"):
-    """Prevent manual and scheduled REST syncs from exceeding 1/minute."""
+def okx_rest_cooldown_remaining(task_name="okx_trade_sync"):
+    """Return remaining REST cooldown seconds; zero means it may run."""
     from services.runtime_controls import read_task_status
 
     try:
@@ -45,9 +45,7 @@ def _enforce_rest_interval(task_name="okx_trade_sync"):
         elapsed = time.time() - float(previous)
     except (TypeError, ValueError):
         elapsed = minimum
-    if elapsed < minimum:
-        remaining = int(max(1, minimum - elapsed))
-        raise OKXReadOnlyError(f"OKX REST 同步冷却中，请 {remaining} 秒后再试")
+    return max(0, int(max(0, minimum - elapsed)))
 
 
 def _float(value, default=None):
@@ -364,7 +362,6 @@ def sync_okx_trade_execution(client=None, include_archive=False):
     trade plans can capture order transitions and fill progress.
     """
     client = client or OKXReadOnlyClient()
-    _enforce_rest_interval()
     if not client.configured:
         raise OKXReadOnlyError("OKX_API_KEY/OKX_API_SECRET/OKX_API_PASSPHRASE 未完整配置")
     account_label = os.getenv("OKX_ACCOUNT_LABEL", "main").strip() or "main"
@@ -393,7 +390,6 @@ def sync_okx_trade_execution(client=None, include_archive=False):
 def sync_okx_readonly_account(client=None):
     """Synchronise one OKX read-only account snapshot and return a safe summary."""
     client = client or OKXReadOnlyClient()
-    _enforce_rest_interval()
     if not client.configured:
         raise OKXReadOnlyError("OKX_API_KEY/OKX_API_SECRET/OKX_API_PASSPHRASE 未完整配置")
 

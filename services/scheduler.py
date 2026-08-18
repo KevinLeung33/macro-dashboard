@@ -102,6 +102,12 @@ class MacroScheduler:
         if not self.trade_execution_sync_runner:
             return
         try:
+            from services.okx_readonly import okx_rest_cooldown_remaining
+
+            remaining = okx_rest_cooldown_remaining("okx_trade_sync")
+            if remaining > 0:
+                logger.info("OKX execution sync skipped during REST cooldown: %ss", remaining)
+                return
             with hold_task("okx_trade_sync"):
                 result = run_with_retry("okx_trade_sync", self.trade_execution_sync_runner)
             counts = result.get("counts") if isinstance(result, dict) else {}
