@@ -285,6 +285,20 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_daily_reports_date
                 ON daily_reports(report_date, session);
 
+            CREATE TABLE IF NOT EXISTS dashboard_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_type TEXT NOT NULL,
+                as_of TEXT NOT NULL,
+                data_version TEXT DEFAULT '',
+                status TEXT DEFAULT 'success',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_dashboard_snapshots_latest
+                ON dashboard_snapshots(snapshot_type, status, as_of DESC, id DESC);
+
             CREATE TABLE IF NOT EXISTS research_hypotheses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,

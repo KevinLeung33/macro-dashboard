@@ -20,7 +20,8 @@ logger = logging.getLogger("scheduler")
 class MacroScheduler:
     def __init__(self, data_pipeline, news_fetcher, report_builder, notifier,
                   fast_news_fetcher=None, cpolar_checker=None, health_checker=None,
-                  paper_trading_runner=None, trade_execution_sync_runner=None):
+                  paper_trading_runner=None, trade_execution_sync_runner=None,
+                  home_snapshot_builder=None):
         self.timezone = app_timezone()
         self.scheduler = BackgroundScheduler(timezone=self.timezone)
         self.data_pipeline = data_pipeline
@@ -30,6 +31,7 @@ class MacroScheduler:
         self.health_checker = health_checker or cpolar_checker
         self.paper_trading_runner = paper_trading_runner
         self.trade_execution_sync_runner = trade_execution_sync_runner
+        self.home_snapshot_builder = home_snapshot_builder
         self.report_builder = report_builder
         self.notifier = notifier
 
@@ -140,6 +142,18 @@ class MacroScheduler:
         except Exception as e:
             logger.error(f"Weekly report failed: {e}")
 
+    def _refresh_home_snapshot(self):
+        if not self.home_snapshot_builder:
+            return
+        try:
+            with hold_task("home_snapshot"):
+                run_with_retry("home_snapshot", self.home_snapshot_builder)
+            logger.info("Home dashboard snapshot refreshed")
+        except TaskBusyError:
+            logger.warning("Home snapshot skipped: another snapshot task is running")
+        except Exception as e:
+            logger.error("Home dashboard snapshot failed: %s", e)
+
     def start(self):
         self._recover_missed_tasks()
         paper_enabled = (
@@ -218,6 +232,13 @@ class MacroScheduler:
             )
         # Daily report: 8:00 AM
         self.scheduler.add_job(self._daily_report, CronTrigger(hour=8, minute=0))
+        if self.home_snapshot_builder:
+            self.scheduler.add_job(
+                self._refresh_home_snapshot,
+                CronTrigger(hour=8, minute=15),
+                id="home_snapshot",
+                replace_existing=True,
+            )
         # Weekly report: Monday 9:00 AM
         self.scheduler.add_job(self._weekly_report, CronTrigger(day_of_week="mon", hour=9, minute=0))
         self.scheduler.start()

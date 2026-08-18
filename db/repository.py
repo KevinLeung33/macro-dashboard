@@ -443,6 +443,45 @@ def query_daily_reports(limit=20):
     return rows
 
 
+def upsert_dashboard_snapshot(snapshot_type, payload, as_of=None,
+                              data_version="", status="success", error_message=""):
+    """Persist a read-optimised dashboard snapshot."""
+    import json
+    from datetime import datetime
+
+    as_of = as_of or datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    payload_json = json.dumps(payload or {}, ensure_ascii=False, default=str)
+    with get_db() as conn:
+        cur = conn.execute(
+            """INSERT INTO dashboard_snapshots
+               (snapshot_type, as_of, data_version, status, payload_json, error_message)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (snapshot_type, as_of, data_version, status, payload_json, str(error_message or "")[:2000]),
+        )
+        return cur.lastrowid
+
+
+def query_latest_dashboard_snapshot(snapshot_type):
+    """Return the newest successful dashboard snapshot, if available."""
+    import json
+
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT * FROM dashboard_snapshots
+               WHERE snapshot_type = ? AND status = 'success'
+               ORDER BY as_of DESC, id DESC LIMIT 1""",
+            (snapshot_type,),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    try:
+        result["payload"] = json.loads(result.pop("payload_json") or "{}")
+    except (TypeError, ValueError):
+        result["payload"] = {}
+    return result
+
+
 # ====== Research hypotheses / viewpoints / watchlist ======
 
 def add_research_hypothesis(title, thesis, assets="", indicators="", news_topics="",

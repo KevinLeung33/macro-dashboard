@@ -60,6 +60,7 @@ def main():
     from services.notifier import notify
     from services.daily_context import get_data_health, save_daily_context
     from services.daily_ai_report import save_ai_trend_report
+    from services.dashboard_snapshot import refresh_home_snapshot
     from services.maintenance import backup_database, runtime_status
     from services.paper_trading import run_paper_trading
     from services.okx_readonly import sync_okx_trade_execution
@@ -111,6 +112,7 @@ def main():
         paper_trading_runner=run_paper_trading,
         trade_execution_sync_runner=sync_okx_trade_execution,
         report_builder=build_scheduled_report,
+        home_snapshot_builder=refresh_home_snapshot,
         notifier=lambda msg: notify(msg, channels),
     )
     scheduler.start()

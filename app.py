@@ -11,11 +11,11 @@ from db.repository import (
     query_daily_reports,
     query_research_context,
     query_trade_notes,
+    query_latest_dashboard_snapshot,
 )
 from db.schema import init_db
 from data.pipeline import fetch_all
 from services.access_control import render_admin_access, require_admin
-from services.ai_market_brief import generate_ai_market_brief
 from services.dashboard_cockpit import build_cockpit
 from services.dashboard_overview import (
     build_cross_asset_tape,
@@ -60,9 +60,18 @@ with status_col:
     )
 
 
-cockpit = build_cockpit()
-brief = build_home_brief(cockpit)
-ai_brief = generate_ai_market_brief(brief, cockpit)
+home_snapshot = query_latest_dashboard_snapshot("home_cockpit")
+if home_snapshot and home_snapshot.get("payload"):
+    snapshot_payload = home_snapshot["payload"]
+    cockpit = snapshot_payload.get("cockpit") or {}
+    brief = snapshot_payload.get("brief") or build_home_brief(cockpit)
+    ai_brief = snapshot_payload.get("ai_brief")
+    st.caption(f"首页快照：{home_snapshot.get('as_of', '—')} · 后台生成")
+else:
+    cockpit = build_cockpit()
+    brief = build_home_brief(cockpit)
+    ai_brief = None
+    st.info("首页快照尚未生成，当前使用一次性回退计算；后台任务完成后页面将改为读取快照。")
 
 # ===== 1. 当前环境 =====
 st.subheader("🔦 当前环境")
