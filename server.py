@@ -65,6 +65,7 @@ def main():
     from services.maintenance import backup_database, runtime_status
     from services.paper_trading import run_paper_trading
     from services.okx_readonly import sync_okx_trade_execution
+    from services.okx_realtime import OKXRealtimeService, read_realtime_status
     from services.runtime_controls import (
         RateLimitExceeded,
         TaskBusyError,
@@ -99,6 +100,13 @@ def main():
 
     # 先完成新表/旧库迁移，再启动 RSS 快速任务。
     init_db()
+
+    okx_realtime = OKXRealtimeService()
+    if okx_realtime.enabled:
+        try:
+            okx_realtime.start()
+        except Exception as exc:
+            logger.error("OKX realtime service disabled after startup failure: %s", exc)
 
     alpha_vantage_key = os.getenv("ALPHA_VANTAGE_KEY", "").strip()
     channels = parse_notify_channels()
@@ -197,7 +205,8 @@ def main():
 
         @app.get("/api/status")
         def status(_token: None = Depends(api_guard("status"))):
-            return {"status": "ok", "runtime": runtime_status(), "data_sources": get_data_health()}
+            return {"status": "ok", "runtime": runtime_status(), "data_sources": get_data_health(),
+                    "okx_realtime": read_realtime_status()}
 
         @app.post("/api/data/refresh")
         def refresh_data(
@@ -215,6 +224,10 @@ def main():
             _token: None = Depends(api_guard("status")),
         ):
             return {"task": task_name, "status": read_task_status().get(task_name, {})}
+
+        @app.get("/api/okx/realtime")
+        def okx_realtime_status(_token: None = Depends(api_guard("status"))):
+            return read_realtime_status()
 
         @app.post("/api/context/daily")
         def create_daily_context(
