@@ -2249,6 +2249,53 @@ def query_latest_trade_account_snapshot(venue=None, account_label=""):
         ).fetchone()
 
 
+def upsert_okx_account_bill(bill):
+    """Persist one OKX bill idempotently for local long-term accounting."""
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO okx_account_bills
+               (venue, account_label, bill_id, bill_type, bill_subtype,
+                inst_type, inst_id, currency, amount, pnl, interest, fee,
+                bill_ts, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(venue, account_label, bill_id) DO UPDATE SET
+                 bill_type=excluded.bill_type,
+                 bill_subtype=excluded.bill_subtype,
+                 amount=excluded.amount, pnl=excluded.pnl,
+                 interest=excluded.interest, fee=excluded.fee,
+                 raw_json=excluded.raw_json""",
+            (
+                bill.get("venue", "OKX"), bill.get("account_label", ""),
+                str(bill.get("bill_id", "")), str(bill.get("bill_type", "")),
+                str(bill.get("bill_subtype", "")), str(bill.get("inst_type", "")),
+                str(bill.get("inst_id", "")), str(bill.get("currency", "")),
+                bill.get("amount"), bill.get("pnl"), bill.get("interest"),
+                bill.get("fee"), bill.get("bill_ts", ""),
+                _json_text(bill.get("raw_json", {})),
+            ),
+        )
+
+
+def query_okx_account_bills(account_label=None, begin=None, end=None, limit=10000):
+    with get_db() as conn:
+        clauses, values = [], []
+        if account_label:
+            clauses.append("account_label = ?")
+            values.append(account_label)
+        if begin:
+            clauses.append("bill_ts >= ?")
+            values.append(begin)
+        if end:
+            clauses.append("bill_ts < ?")
+            values.append(end)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.append(limit)
+        return conn.execute(
+            f"SELECT * FROM okx_account_bills{where} ORDER BY bill_ts ASC, id ASC LIMIT ?",
+            values,
+        ).fetchall()
+
+
 def upsert_trade_position(position):
     """保存 OKX/其他交易所只读同步到的当前持仓。"""
     values = (

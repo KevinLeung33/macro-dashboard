@@ -22,6 +22,7 @@ from db.repository import (
     upsert_trade_fill,
     upsert_trade_order,
     upsert_trade_position,
+    upsert_okx_account_bill,
     refresh_trade_plan_order_links,
 )
 
@@ -473,6 +474,76 @@ def probe_okx_account_bills(profile=None, days=100):
         "bill_types": types,
         "sample": [_safe_json(row) for row in rows[:5]],
     }
+
+
+def sync_okx_account_bills(profile=None, days=90, max_pages=20):
+    """Incrementally archive account bills locally for long-term reporting."""
+    client = OKXReadOnlyClient(profile=profile)
+    if not client.configured:
+        return {"status": "skipped", "profile": profile or "main", "reason": "not configured"}
+    account_label = (
+        os.getenv(f"OKX_{str(profile).upper()}_ACCOUNT_LABEL", "").strip()
+        if profile else os.getenv("OKX_ACCOUNT_LABEL", "").strip()
+    ) or (profile or "main")
+    now_ms = int(time.time() * 1000)
+    begin_ms = now_ms - max(1, int(days)) * 86400 * 1000
+    cursor = None
+    fetched = stored = 0
+    for _ in range(max(1, int(max_pages))):
+        params = {"begin": str(begin_ms), "end": str(now_ms), "limit": "100"}
+        if cursor:
+            params["after"] = cursor
+        rows = client.fetch_account_bills_archive(**params)
+        if not rows:
+            break
+        fetched += len(rows)
+        for row in rows:
+            bill_id = row.get("billId")
+            if not bill_id:
+                continue
+            upsert_okx_account_bill({
+                "venue": "OKX",
+                "account_label": account_label,
+                "bill_id": bill_id,
+                "bill_type": row.get("type", ""),
+                "bill_subtype": row.get("subType", ""),
+                "inst_type": row.get("instType", ""),
+                "inst_id": row.get("instId", ""),
+                "currency": row.get("ccy", ""),
+                "amount": _float(row.get("balChg")),
+                "pnl": _float(row.get("pnl")),
+                "interest": _float(row.get("interest")),
+                "fee": _float(row.get("fee")),
+                "bill_ts": _iso_from_ms(row.get("ts")),
+                "raw_json": _safe_json(row),
+            })
+            stored += 1
+        oldest = min((_float(row.get("ts")) for row in rows if row.get("ts")), default=None)
+        if oldest is not None and oldest <= begin_ms:
+            break
+        next_cursor = str(rows[-1].get("billId") or "")
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+        # bills-archive is rate limited; keep historical backfill gentle.
+        time.sleep(0.45)
+    return {
+        "status": "success", "profile": profile or "main", "account_label": account_label,
+        "fetched": fetched, "stored": stored,
+    }
+
+
+def sync_okx_bill_ledgers(days=90):
+    """Sync main and optional carry ledgers without exposing credentials."""
+    profiles = [None]
+    if all(os.getenv(name, "").strip() for name in (
+        "OKX_CARRY_API_KEY", "OKX_CARRY_API_SECRET", "OKX_CARRY_API_PASSPHRASE"
+    )):
+        profiles.append("carry")
+    results = []
+    for profile in profiles:
+        results.append(sync_okx_account_bills(profile=profile, days=days))
+    return {"results": results, "counts": {"profiles": len(results)}}
 
 
 def sync_okx_readonly_account(client=None):

@@ -22,6 +22,7 @@ class MacroScheduler:
                   fast_news_fetcher=None, cpolar_checker=None, health_checker=None,
                   paper_trading_runner=None, trade_execution_sync_runner=None,
                   account_snapshot_runner=None,
+                  bill_sync_runner=None,
                   home_snapshot_builder=None):
         self.timezone = app_timezone()
         self.scheduler = BackgroundScheduler(timezone=self.timezone)
@@ -33,6 +34,7 @@ class MacroScheduler:
         self.paper_trading_runner = paper_trading_runner
         self.trade_execution_sync_runner = trade_execution_sync_runner
         self.account_snapshot_runner = account_snapshot_runner
+        self.bill_sync_runner = bill_sync_runner
         self.home_snapshot_builder = home_snapshot_builder
         self.report_builder = report_builder
         self.notifier = notifier
@@ -136,6 +138,16 @@ class MacroScheduler:
                 logger.info("OKX account snapshot refreshed: %s", (result or {}).get("account_label", "?"))
         except Exception as e:
             logger.error("OKX account snapshot failed: %s", e)
+
+    def _sync_bill_ledgers(self):
+        if not self.bill_sync_runner:
+            return
+        try:
+            with hold_task("okx_bill_sync"):
+                result = run_with_retry("okx_bill_sync", self.bill_sync_runner)
+            logger.info("OKX bill ledgers refreshed: %s", result)
+        except Exception as e:
+            logger.error("OKX bill ledger sync failed: %s", e)
 
     def _daily_report(self):
         logger.info("Scheduled: generating daily report at %s...", self._now())
@@ -258,6 +270,13 @@ class MacroScheduler:
                     start_date=datetime.now(self.timezone) + timedelta(seconds=5),
                 ),
                 id="okx_account_snapshot",
+                replace_existing=True,
+            )
+        if self.bill_sync_runner and execution_sync_enabled:
+            self.scheduler.add_job(
+                self._sync_bill_ledgers,
+                CronTrigger(hour="0,8,16", minute=5),
+                id="okx_bill_sync_settlement",
                 replace_existing=True,
             )
         # Daily report: 8:00 AM

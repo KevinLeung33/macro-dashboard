@@ -474,6 +474,30 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_trade_account_snapshots_latest
                 ON trade_account_snapshots(venue, account_label, observed_at DESC);
 
+            -- OKX only exposes a rolling bill window; keep a local ledger.
+            CREATE TABLE IF NOT EXISTS okx_account_bills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue TEXT NOT NULL DEFAULT 'OKX',
+                account_label TEXT NOT NULL DEFAULT '',
+                bill_id TEXT NOT NULL,
+                bill_type TEXT DEFAULT '',
+                bill_subtype TEXT DEFAULT '',
+                inst_type TEXT DEFAULT '',
+                inst_id TEXT DEFAULT '',
+                currency TEXT DEFAULT '',
+                amount REAL,
+                pnl REAL,
+                interest REAL,
+                fee REAL,
+                bill_ts TEXT NOT NULL,
+                raw_json TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(venue, account_label, bill_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_okx_bills_account_time
+                ON okx_account_bills(account_label, bill_ts DESC, id DESC);
+
             CREATE TABLE IF NOT EXISTS trade_orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 venue TEXT NOT NULL,
