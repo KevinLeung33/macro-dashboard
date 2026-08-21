@@ -7,6 +7,9 @@
 import logging
 import os
 import threading
+import json
+import time
+from pathlib import Path
 
 import requests
 
@@ -16,6 +19,36 @@ from services.runtime_controls import parse_notify_channels
 logger = logging.getLogger("cpolar_monitor")
 _STATE_LOCK = threading.Lock()
 _LAST_STATE = None
+
+
+def _state_path():
+    return Path(os.getenv("RUNTIME_LOCK_DIR", "runtime/locks")).parent / "cpolar_health.json"
+
+
+def _threshold(name, default):
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_state():
+    try:
+        payload = json.loads(_state_path().read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_state(payload):
+    try:
+        path = _state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        logger.debug("Could not persist cpolar health state", exc_info=True)
 
 
 def _enabled():
@@ -89,7 +122,7 @@ def _notify_transition(state, checks):
 
 
 def check_cpolar(notify_on_transition=True):
-    """检查本机 8501 和可选 cpolar 公网 URL，仅在状态变化时通知。"""
+    """检查公网入口；连续失败/恢复达到阈值才改变有效状态。"""
     global _LAST_STATE
     if not _enabled():
         logger.info("cpolar health check disabled")
@@ -104,17 +137,50 @@ def check_cpolar(notify_on_transition=True):
         logger.warning("CPOLAR_PUBLIC_URL is not configured; only local 8501 is monitored")
 
     configured_checks = [item for item in checks if item.get("configured")]
-    state = "ok" if configured_checks and all(item.get("ok") for item in configured_checks) else "failed"
+    raw_state = "ok" if configured_checks and all(item.get("ok") for item in configured_checks) else "failed"
     with _STATE_LOCK:
-        previous = _LAST_STATE
-        if previous != state:
-            if notify_on_transition and (state == "failed" or previous == "failed"):
-                _notify_transition(state, checks)
-            _LAST_STATE = state
+        persisted = _read_state()
+        previous = persisted.get("state") or _LAST_STATE
+        failures = int(persisted.get("consecutive_failures") or 0)
+        successes = int(persisted.get("consecutive_successes") or 0)
+        if raw_state == "failed":
+            failures += 1
+            successes = 0
+            if previous not in {"failed"} and failures < _threshold("CPOLAR_FAILURE_THRESHOLD", 3):
+                state = previous or "pending_failure"
+            else:
+                state = "failed"
+        else:
+            successes += 1
+            failures = 0
+            if previous == "failed" and successes < _threshold("CPOLAR_RECOVERY_THRESHOLD", 2):
+                state = "failed"
+            else:
+                state = "ok"
+        if notify_on_transition and state != previous and state in {"ok", "failed"}:
+            _notify_transition(state, checks)
+        _LAST_STATE = state
+        _write_state({
+            "state": state,
+            "raw_state": raw_state,
+            "consecutive_failures": failures,
+            "consecutive_successes": successes,
+            "updated_at": time.time(),
+        })
 
     logger.info(
-        "cpolar health state=%s checks=%s",
+        "cpolar health state=%s raw_state=%s failures=%s successes=%s checks=%s",
         state,
+        raw_state,
+        failures,
+        successes,
         "; ".join(f"{item['label']}={item.get('error') or 'ok'}" for item in checks),
     )
-    return {"enabled": True, "state": state, "checks": checks}
+    return {
+        "enabled": True,
+        "state": state,
+        "raw_state": raw_state,
+        "consecutive_failures": failures,
+        "consecutive_successes": successes,
+        "checks": checks,
+    }

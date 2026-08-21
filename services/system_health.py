@@ -230,6 +230,11 @@ def _data_issues():
             )
             continue
         if last_status == "skipped":
+            ignored_skipped_sources = set(_env_csv(
+                "HEALTH_IGNORED_SKIPPED_SOURCES", "wu_btc_index"
+            ))
+            if source in ignored_skipped_sources:
+                continue
             warnings.append(f"数据源 {source} 被跳过")
         attempt_at = _parse_timestamp(row.get("last_fetch_attempt"))
         if attempt_at is None:
@@ -416,11 +421,19 @@ def check_system_health():
     )
 
     cpolar = check_cpolar(notify_on_transition=False)
-    if cpolar.get("enabled"):
+    if cpolar.get("enabled") and cpolar.get("state") == "failed":
         critical.extend(
             f"{item['label']}不可用：{item.get('error') or '检查失败'}"
             for item in cpolar.get("checks", []) if item.get("configured") and item.get("ok") is False
         )
+    elif cpolar.get("enabled") and cpolar.get("state") not in {"ok", "failed"}:
+        # A single failed probe is held inside cpolar_monitor's debounce
+        # window; do not turn it into a P0/P1 notification here.
+        logger.info(
+            "cpolar probe is debouncing: state=%s failures=%s",
+            cpolar.get("state"), cpolar.get("consecutive_failures"),
+        )
+    if cpolar.get("enabled"):
         if not os.getenv("CPOLAR_PUBLIC_URL", "").strip():
             warnings.append("未配置 CPOLAR_PUBLIC_URL，无法验证公网隧道是否 inactive")
     else:
