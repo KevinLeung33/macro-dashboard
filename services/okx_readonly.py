@@ -149,7 +149,17 @@ class OKXReadOnlyClient:
             if self.demo:
                 headers["x-simulated-trading"] = "1"
         response = self.session.get(f"{self.base_url}{request_path}", headers=headers, timeout=self.timeout)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            # Include OKX's diagnostic code/message, never request headers.
+            try:
+                detail = response.json()
+            except ValueError:
+                detail = response.text[:300]
+            raise OKXReadOnlyError(
+                f"OKX HTTP {response.status_code}: {detail}"
+            ) from exc
         try:
             payload = response.json()
         except ValueError as exc:
@@ -441,7 +451,11 @@ def probe_okx_account_bills(profile=None, days=100):
         raise OKXReadOnlyError("OKX read-only credentials are not configured")
     now_ms = int(time.time() * 1000)
     after_ms = now_ms - max(1, int(days)) * 86400 * 1000
-    rows = client.fetch_account_bills(after=str(after_ms), limit="100")
+    # `after` is a billId cursor, not a timestamp. Use begin/end for time
+    # filtering; otherwise a millisecond timestamp silently returns no rows.
+    rows = client.fetch_account_bills_archive(
+        begin=str(after_ms), end=str(now_ms), limit="100"
+    )
     types = {}
     timestamps = []
     for row in rows:
