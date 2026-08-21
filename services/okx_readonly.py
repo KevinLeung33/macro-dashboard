@@ -543,7 +543,33 @@ def sync_okx_bill_ledgers(days=90):
     results = []
     for profile in profiles:
         results.append(sync_okx_account_bills(profile=profile, days=days))
-    return {"results": results, "counts": {"profiles": len(results)}}
+    from services.okx_costs import format_settlement_card, funding_interest_summary
+    from services.notifier import send_lark_card
+
+    profile_summaries = []
+    for profile in profiles:
+        label = (profile or os.getenv("OKX_ACCOUNT_LABEL", "main")).strip() or "main"
+        profile_summaries.append((label, funding_interest_summary(account_label=label, hours=8)))
+    total = {
+        key: sum(item[key] for _, item in profile_summaries)
+        for key in ("funding_income", "funding_expense", "funding_net", "interest_expense", "net_after_interest", "rows")
+    }
+    total["by_currency"] = {}
+    for _, item in profile_summaries:
+        for currency, currency_item in (item.get("by_currency") or {}).items():
+            target = total["by_currency"].setdefault(currency, {
+                "funding_income": 0.0, "funding_expense": 0.0, "interest_expense": 0.0,
+            })
+            for key in ("funding_income", "funding_expense", "interest_expense"):
+                target[key] += currency_item[key]
+            target["funding_net"] = target["funding_income"] - target["funding_expense"]
+            target["net_after_interest"] = target["funding_net"] - target["interest_expense"]
+    if os.getenv("OKX_BILL_LARK_ENABLED", "true").lower() in {"1", "true", "yes", "on"}:
+        send_lark_card(
+            format_settlement_card(total, profile_summaries),
+            title="OKX 资金费与利息结算",
+        )
+    return {"results": results, "summary": total, "counts": {"profiles": len(results)}}
 
 
 def sync_okx_readonly_account(client=None):

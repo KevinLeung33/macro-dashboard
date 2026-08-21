@@ -34,6 +34,7 @@ from services.runtime_controls import TaskBusyError, hold_task, run_with_retry
 from services.trade_review import review_trade_note
 from services.okx_readonly import OKXReadOnlyClient, okx_rest_cooldown_remaining, sync_okx_readonly_account
 from services.okx_realtime import read_realtime_orders, read_realtime_positions, read_realtime_status
+from services.okx_costs import cumulative_frame, funding_interest_windows
 from services.trade_plan_context import build_trade_plan_snapshot
 from services.trade_plan_feedback import generate_trade_plan_feedback
 from services.trade_execution import (
@@ -324,6 +325,36 @@ if snapshot:
     if sync_result.get("warnings"):
         for warning in sync_result["warnings"]:
             st.warning(warning)
+
+st.markdown("### 资金费与借款利息（本地账本）")
+st.caption("数据来自本地归档账单；资金费收入/支出按账单 pnl，借款利息按 interest 字段统计。")
+cost_windows = funding_interest_windows(account_label)
+window_rows = []
+for window, item in cost_windows.items():
+    for currency, currency_item in (item.get("by_currency") or {}).items():
+        window_rows.append({
+            "窗口": window,
+            "币种": currency,
+            "资金费收入": currency_item["funding_income"],
+            "资金费支出": currency_item["funding_expense"],
+            "利息支出": currency_item["interest_expense"],
+            "资金费净额": currency_item["funding_net"],
+            "扣息后净额": currency_item["net_after_interest"],
+            "账单数": item["rows"],
+        })
+st.dataframe(pd.DataFrame(window_rows), use_container_width=True, hide_index=True)
+cost_frame = cumulative_frame(account_label, days=90)
+if not cost_frame.empty:
+    import plotly.graph_objects as go
+    fig = go.Figure()
+    for currency, currency_frame in cost_frame.groupby("currency"):
+        fig.add_trace(go.Scatter(x=currency_frame["date"], y=currency_frame["funding_income_cum"], name=f"{currency} 资金费收入"))
+        fig.add_trace(go.Scatter(x=currency_frame["date"], y=currency_frame["interest_expense_cum"], name=f"{currency} 利息支出"))
+        fig.add_trace(go.Scatter(x=currency_frame["date"], y=currency_frame["net_cum"], name=f"{currency} 扣息后净额"))
+    fig.update_layout(height=320, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="金额（原币种简单合计）")
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("本地账本暂无资金费或利息记录；完成一次结算同步后会显示。")
 
 if positions:
     st.markdown("**当前持仓**")
