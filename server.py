@@ -64,7 +64,7 @@ def main():
     from services.dashboard_snapshot import refresh_home_snapshot
     from services.maintenance import backup_database, runtime_status
     from services.paper_trading import run_paper_trading
-    from services.okx_readonly import sync_okx_trade_execution
+    from services.okx_readonly import sync_okx_trade_execution, sync_okx_account_balance
     from services.okx_realtime import OKXRealtimeService, read_realtime_status
     from services.runtime_controls import (
         RateLimitExceeded,
@@ -143,6 +143,7 @@ def main():
         health_checker=check_system_health,
         paper_trading_runner=run_paper_trading,
         trade_execution_sync_runner=sync_okx_trade_execution,
+        account_snapshot_runner=sync_okx_account_balance,
         report_builder=build_scheduled_report,
         home_snapshot_builder=refresh_home_snapshot,
         notifier=lambda msg: notify(msg, channels),

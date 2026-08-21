@@ -85,12 +85,14 @@ def _safe_json(value):
 class OKXReadOnlyClient:
     """Small signed REST client with a deliberately GET-only surface."""
 
-    def __init__(self, base_url=None, session=None):
+    def __init__(self, base_url=None, session=None, profile=None):
         self.base_url = (base_url or os.getenv("OKX_API_BASE_URL", "https://www.okx.com")).rstrip("/")
-        self.api_key = os.getenv("OKX_API_KEY", "").strip()
-        self.api_secret = os.getenv("OKX_API_SECRET", "").strip()
-        self.passphrase = os.getenv("OKX_API_PASSPHRASE", "").strip()
-        self.demo = os.getenv("OKX_API_DEMO", "false").lower() in {"1", "true", "yes"}
+        self.profile = (profile or "").strip().lower()
+        prefix = f"OKX_{self.profile.upper()}_" if self.profile else "OKX_"
+        self.api_key = os.getenv(f"{prefix}API_KEY", "").strip()
+        self.api_secret = os.getenv(f"{prefix}API_SECRET", "").strip()
+        self.passphrase = os.getenv(f"{prefix}API_PASSPHRASE", "").strip()
+        self.demo = os.getenv(f"{prefix}API_DEMO", os.getenv("OKX_API_DEMO", "false")).lower() in {"1", "true", "yes"}
         self.timeout = max(3, _int(os.getenv("OKX_API_TIMEOUT_SECONDS", "15"), 15))
         self.session = session or requests.Session()
         self._server_time_cache = None
@@ -164,6 +166,14 @@ class OKXReadOnlyClient:
 
     def fetch_balance(self):
         return self._private_get("/api/v5/account/balance")
+
+    def fetch_account_bills(self, **params):
+        """Fetch recent account bills; read-only and paginatable by billId."""
+        return self._private_get("/api/v5/account/bills", params)
+
+    def fetch_account_bills_archive(self, **params):
+        """Fetch the rolling archived bill endpoint where supported by OKX."""
+        return self._private_get("/api/v5/account/bills-archive", params)
 
     def fetch_positions(self, inst_type=None):
         return self._private_get(
@@ -384,6 +394,70 @@ def sync_okx_trade_execution(client=None, include_archive=False):
             "fills": len(fills),
             "plan_link_updates": plan_link_updates.get("changed", 0),
         },
+    }
+
+
+def sync_okx_account_balance(client=None, profile=None):
+    """Persist a lightweight account-balance snapshot at most once per minute.
+
+    Orders/positions remain on their own execution sync.  Keeping this small
+    endpoint separate prevents the UI equity timestamp from depending on the
+    slower order-history calls.
+    """
+    task_name = f"okx_account_snapshot_{profile or 'main'}"
+    remaining = okx_rest_cooldown_remaining(task_name)
+    if remaining > 0:
+        return {"status": "cooldown", "remaining_seconds": remaining}
+    client = client or OKXReadOnlyClient(profile=profile)
+    if not client.configured:
+        raise OKXReadOnlyError("OKX read-only credentials are not configured")
+    account_label = (
+        os.getenv(f"OKX_{str(profile).upper()}_ACCOUNT_LABEL", "").strip()
+        if profile else os.getenv("OKX_ACCOUNT_LABEL", "").strip()
+    ) or (profile or "main")
+    rows = client.fetch_balance()
+    balance = rows[0] if rows else {}
+    observed_at = _iso_from_ms(balance.get("ts")) or datetime.now(timezone.utc).isoformat()
+    snapshot = {
+        "venue": "OKX",
+        "account_label": account_label,
+        "observed_at": observed_at,
+        "equity": _float(balance.get("adjEq") or balance.get("totalEq")),
+        "available_balance": _float(balance.get("availEq")),
+        "unrealized_pnl": _float(balance.get("upl"), 0),
+        "margin_ratio": _float(balance.get("mgnRatio")),
+        "account_mode": os.getenv(f"OKX_{str(profile).upper()}_ACCOUNT_MODE", "") if profile else os.getenv("OKX_ACCOUNT_MODE", ""),
+        "margin_mode": "cross",
+        "raw_json": {"balance": _safe_json(balance), "source": "okx_rest_balance"},
+    }
+    upsert_trade_account_snapshot(**snapshot)
+    return {"status": "success", "account_label": account_label, "snapshot": snapshot}
+
+
+def probe_okx_account_bills(profile=None, days=100):
+    """Read-only diagnostic: report bill types and oldest reachable timestamp."""
+    client = OKXReadOnlyClient(profile=profile)
+    if not client.configured:
+        raise OKXReadOnlyError("OKX read-only credentials are not configured")
+    now_ms = int(time.time() * 1000)
+    after_ms = now_ms - max(1, int(days)) * 86400 * 1000
+    rows = client.fetch_account_bills(after=str(after_ms), limit="100")
+    types = {}
+    timestamps = []
+    for row in rows:
+        bill_type = str(row.get("type") or "")
+        types[bill_type] = types.get(bill_type, 0) + 1
+        try:
+            timestamps.append(int(row.get("ts")))
+        except (TypeError, ValueError):
+            pass
+    return {
+        "profile": profile or "main",
+        "rows": len(rows),
+        "oldest_ts": min(timestamps) if timestamps else None,
+        "newest_ts": max(timestamps) if timestamps else None,
+        "bill_types": types,
+        "sample": [_safe_json(row) for row in rows[:5]],
     }
 
 
