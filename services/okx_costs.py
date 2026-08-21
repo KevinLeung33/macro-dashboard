@@ -71,7 +71,14 @@ def cumulative_frame(account_label=None, days=90):
     if not rows:
         return pd.DataFrame(columns=["date", "funding_income", "interest_expense", "net"])
     frame = pd.DataFrame(rows)
-    frame["date"] = pd.to_datetime(frame["bill_ts"], utc=True).dt.floor("D")
+    # Historical rows may contain ISO8601 timestamps with or without
+    # fractional seconds. Pandas 2.x otherwise infers one strict format for
+    # the whole column and crashes on the first variant.
+    parsed_ts = pd.to_datetime(frame["bill_ts"], format="mixed", utc=True, errors="coerce")
+    frame = frame.loc[parsed_ts.notna()].copy()
+    if frame.empty:
+        return pd.DataFrame(columns=["currency", "date", "funding_income", "interest_expense", "net_cum"])
+    frame["date"] = parsed_ts.loc[frame.index].dt.floor("D")
     frame["currency"] = frame["currency"].fillna("UNKNOWN")
     frame["funding_income"] = frame["funding_signed"].clip(lower=0)
     frame["funding_expense"] = (-frame["funding_signed"]).clip(lower=0)
