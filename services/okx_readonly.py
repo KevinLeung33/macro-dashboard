@@ -267,6 +267,14 @@ def _account_mode(acct_level):
     }.get(str(acct_level or ""), f"unknown({acct_level or 'unset'})")
 
 
+def _okx_account_label(profile=None):
+    if profile:
+        return os.getenv(
+            f"OKX_{str(profile).upper()}_ACCOUNT_LABEL", profile
+        ).strip() or profile
+    return os.getenv("OKX_ACCOUNT_LABEL", "main").strip() or "main"
+
+
 def _normalise_order(row, account_label):
     return {
         "venue": "OKX",
@@ -422,10 +430,7 @@ def sync_okx_account_balance(client=None, profile=None):
     client = client or OKXReadOnlyClient(profile=profile)
     if not client.configured:
         raise OKXReadOnlyError("OKX read-only credentials are not configured")
-    account_label = (
-        os.getenv(f"OKX_{str(profile).upper()}_ACCOUNT_LABEL", "").strip()
-        if profile else os.getenv("OKX_ACCOUNT_LABEL", "").strip()
-    ) or (profile or "main")
+    account_label = _okx_account_label(profile)
     rows = client.fetch_balance()
     balance = rows[0] if rows else {}
     observed_at = _iso_from_ms(balance.get("ts")) or datetime.now(timezone.utc).isoformat()
@@ -481,10 +486,7 @@ def sync_okx_account_bills(profile=None, days=90, max_pages=20):
     client = OKXReadOnlyClient(profile=profile)
     if not client.configured:
         return {"status": "skipped", "profile": profile or "main", "reason": "not configured"}
-    account_label = (
-        os.getenv(f"OKX_{str(profile).upper()}_ACCOUNT_LABEL", "").strip()
-        if profile else os.getenv("OKX_ACCOUNT_LABEL", "").strip()
-    ) or (profile or "main")
+    account_label = _okx_account_label(profile)
     now_ms = int(time.time() * 1000)
     begin_ms = now_ms - max(1, int(days)) * 86400 * 1000
     cursor = None
@@ -550,7 +552,7 @@ def sync_okx_bill_ledgers(days=90):
 
     profile_summaries = []
     for profile in profiles:
-        label = (profile or os.getenv("OKX_ACCOUNT_LABEL", "main")).strip() or "main"
+        label = _okx_account_label(profile)
         profile_summaries.append((label, funding_interest_summary(account_label=label, hours=8)))
     total = {
         key: sum(item[key] for _, item in profile_summaries)
