@@ -534,12 +534,14 @@ def sync_okx_account_bills(profile=None, days=90, max_pages=20):
 
 
 def sync_okx_bill_ledgers(days=90):
-    """Sync main and optional carry ledgers without exposing credentials."""
-    profiles = [None]
-    if all(os.getenv(name, "").strip() for name in (
-        "OKX_CARRY_API_KEY", "OKX_CARRY_API_SECRET", "OKX_CARRY_API_PASSPHRASE"
-    )):
-        profiles.append("carry")
+    """Sync the explicitly configured bill profiles, separate from trade UI."""
+    configured_profiles = [item.strip().lower() for item in os.getenv("OKX_BILL_PROFILES", "").split(",") if item.strip()]
+    if not configured_profiles:
+        carry_configured = all(os.getenv(name, "").strip() for name in (
+            "OKX_CARRY_API_KEY", "OKX_CARRY_API_SECRET", "OKX_CARRY_API_PASSPHRASE"
+        ))
+        configured_profiles = ["carry"] if carry_configured else ["main"]
+    profiles = [None if item == "main" else item for item in configured_profiles]
     results = []
     for profile in profiles:
         results.append(sync_okx_account_bills(profile=profile, days=days))

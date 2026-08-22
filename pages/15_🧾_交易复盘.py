@@ -326,9 +326,10 @@ if snapshot:
         for warning in sync_result["warnings"]:
             st.warning(warning)
 
-st.markdown("### 资金费与借款利息（本地账本）")
-st.caption("数据来自本地归档账单；资金费收入/支出按账单 pnl，借款利息按 interest 字段统计。")
-cost_windows = funding_interest_windows(account_label)
+bill_account_label = os.getenv("OKX_BILL_ACCOUNT_LABEL", "carry").strip() or "carry"
+st.markdown(f"### 资金费与借款利息（{bill_account_label} 本地账本）")
+st.caption("账单账户与交易账户独立；资金费收入/支出按账单 pnl，借款利息按 interest 字段统计。")
+cost_windows = funding_interest_windows(bill_account_label)
 window_rows = []
 for window, item in cost_windows.items():
     for currency, currency_item in (item.get("by_currency") or {}).items():
@@ -343,7 +344,7 @@ for window, item in cost_windows.items():
             "账单数": item["rows"],
         })
 st.dataframe(pd.DataFrame(window_rows), use_container_width=True, hide_index=True)
-cost_frame = cumulative_frame(account_label, days=90)
+cost_frame = cumulative_frame(bill_account_label, days=90)
 if not cost_frame.empty:
     import plotly.graph_objects as go
     fig = go.Figure()
