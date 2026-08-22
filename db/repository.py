@@ -907,20 +907,63 @@ def query_recent_newsflash(limit=20, minutes=180):
                FROM news_articles
                WHERE feed_kind = 'newsflash'
                  AND COALESCE(published_at, fetched_at) >= datetime('now', ?)
+                 AND (COALESCE(flash_alerted, 0) = 0
+                      OR (flash_alerted = 2 AND processing_updated_at < datetime('now', '-15 minutes')))
                ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT ?""",
             (f"-{max(1, int(minutes))} minutes", max(1, int(limit))),
+        ).fetchall()
+
+
+def upsert_news_feedback(article_id, label, category="", note=""):
+    with get_db() as conn:
+        conn.execute(
+            """INSERT INTO news_feedback(article_id, label, category, note)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(article_id) DO UPDATE SET
+                 label=excluded.label, category=excluded.category,
+                 note=excluded.note, updated_at=CURRENT_TIMESTAMP""",
+            (article_id, label, category or "", note or ""),
+        )
+
+
+def query_news_feedback(article_id=None, limit=500):
+    with get_db() as conn:
+        if article_id is not None:
+            return conn.execute(
+                "SELECT * FROM news_feedback WHERE article_id = ? LIMIT 1",
+                (article_id,),
+            ).fetchone()
+        return conn.execute(
+            "SELECT * FROM news_feedback ORDER BY updated_at DESC, id DESC LIMIT ?",
+            (limit,),
         ).fetchall()
 
 
 def claim_newsflash_alert(article_id):
     with get_db() as conn:
         cur = conn.execute(
-            """UPDATE news_articles SET flash_alerted = 1,
+            """UPDATE news_articles SET flash_alerted = 2,
                       processing_updated_at = CURRENT_TIMESTAMP
-               WHERE id = ? AND COALESCE(flash_alerted, 0) = 0""",
+               WHERE id = ? AND (COALESCE(flash_alerted, 0) = 0
+                  OR (flash_alerted = 2 AND processing_updated_at < datetime('now', '-15 minutes')))""",
             (article_id,),
         )
         return cur.rowcount == 1
+
+
+def finish_newsflash_alert(article_id, sent=True, error_message=""):
+    """Mark a fast-news alert sent only after notification succeeds.
+
+    A failed delivery returns the article to 0 so a later refresh can retry.
+    """
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE news_articles
+               SET flash_alerted = ?, processing_error = ?,
+                   processing_updated_at = CURRENT_TIMESTAMP
+               WHERE id = ? AND COALESCE(flash_alerted, 0) = 2""",
+            (1 if sent else 0, str(error_message or "")[:500], article_id),
+        )
 
 
 def get_unanalyzed_articles(limit=20):

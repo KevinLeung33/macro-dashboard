@@ -8,6 +8,7 @@ from db.repository import (
     query_analyzed_news, query_cluster_articles, query_cluster_research_links,
     query_news_clusters, query_news_feed_states, query_news_processing_summary, retry_failed_articles,
     query_recent_newsflash,
+    query_news_feedback, upsert_news_feedback,
 )
 from db.schema import get_db
 from services.ai_review import ai_review_statistics, refresh_ai_analysis_reviews
@@ -86,6 +87,25 @@ with tab0:
             st.markdown(f"**{icon} {row['source']} · {row['published_at'] or '—'}**")
             st.write(row["title"])
             st.caption(f"{row['summary'][:360] if row['summary'] else '暂无摘要'} · {link}")
+            feedback = query_news_feedback(row["id"])
+            current_label = feedback["label"] if feedback else ""
+            st.caption(f"人工反馈：{current_label or '未标记'}")
+            feedback_cols = st.columns([1, 1, 1, 3])
+            with feedback_cols[0]:
+                if st.button("重要", key=f"news_feedback_important_{row['id']}", disabled=not admin_access):
+                    if require_admin("标记重要新闻"):
+                        upsert_news_feedback(row["id"], "important")
+                        st.rerun()
+            with feedback_cols[1]:
+                if st.button("噪音", key=f"news_feedback_noise_{row['id']}", disabled=not admin_access):
+                    if require_admin("标记新闻噪音"):
+                        upsert_news_feedback(row["id"], "noise")
+                        st.rerun()
+            with feedback_cols[2]:
+                if st.button("不确定", key=f"news_feedback_uncertain_{row['id']}", disabled=not admin_access):
+                    if require_admin("标记新闻不确定"):
+                        upsert_news_feedback(row["id"], "uncertain")
+                        st.rerun()
             st.divider()
 
 # ====== TAB 1: Event Clusters ======

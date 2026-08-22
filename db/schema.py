@@ -914,6 +914,21 @@ def init_db():
                 FOREIGN KEY (cluster_id) REFERENCES news_clusters(id)
             );
 
+            CREATE TABLE IF NOT EXISTS news_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                article_id INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                category TEXT DEFAULT '',
+                note TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(article_id),
+                FOREIGN KEY (article_id) REFERENCES news_articles(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_news_feedback_label
+                ON news_feedback(label, updated_at DESC);
+
             CREATE INDEX IF NOT EXISTS idx_news_alerts_status
                 ON news_alerts(status, updated_at);
 

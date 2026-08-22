@@ -12,6 +12,7 @@ from db.repository import (
     query_news_clusters,
     set_runtime_setting,
     claim_newsflash_alert,
+    finish_newsflash_alert,
     query_recent_newsflash,
 )
 from services.runtime_controls import parse_notify_channels
@@ -222,10 +223,13 @@ def dispatch_flash_rule_alerts(limit=10):
             from services.notifier import notify
             results = notify(message, config["channels"], title="Crypto重要快讯", level="warning")
             if any(results.values()):
+                finish_newsflash_alert(row["id"], sent=True)
                 sent += 1
             else:
+                finish_newsflash_alert(row["id"], sent=False, error_message="No notification channel accepted the alert")
                 failed += 1
         except Exception as exc:
             logger.warning("Flash rule alert failed for article=%s: %s", row["id"], exc)
+            finish_newsflash_alert(row["id"], sent=False, error_message=exc)
             failed += 1
     return {"sent": sent, "skipped": skipped, "failed": failed}
